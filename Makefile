@@ -1,16 +1,17 @@
 # Shortcuts for various tasks (UNIX only).
 
-PYTHON = python3.5
+PYTHON = python
 
 # In not in a virtualenv, add --user options for install commands.
-INSTALL_OPTS = `$(PYTHON) -c "import sys; print('' if hasattr(sys, 'real_prefix') else '--user')"`
+#INSTALL_OPTS = `$(PYTHON) -c "import sys; print('' if hasattr(sys, 'real_prefix') else '--user')"`
 
-DEPS = pytest \
+CONDA_DEPS = pytest \
 	sphinx \
-	flake8 \
 	pep8 \
-	autopep8 \
 	pyflakes
+
+PIP_DEPS = flake8 \
+	autopep8
 
 all: test
 
@@ -48,7 +49,7 @@ _:
 install:
 	# make sure setuptools is installed (needed for 'develop' / edit mode)
 	$(PYTHON) -c "import setuptools"
-	$(PYTHON) setup.py develop $(INSTALL_OPTS)
+	$(PYTHON) setup.py develop
 	rm -rf tmp
 
 # Uninstall this package via pip.
@@ -58,8 +59,8 @@ uninstall:
 # Install useful deps which are nice to have while developing / testing;
 # deps these are also upgraded.
 setup-dev-env:
-	$(PYTHON) -m pip install $(INSTALL_OPTS) --upgrade pip
-	$(PYTHON) -m pip install $(INSTALL_OPTS) --upgrade $(DEPS)
+	conda install $(CONDA_DEPS)
+	$(PYTHON) -m pip install --upgrade $(PIP_DEPS)
 
 # ===================================================================
 # Tests
