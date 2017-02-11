@@ -5,10 +5,9 @@
 __all__ = ['Task', 'sleep', 'wake_at', 'current_task', 'spawn', 'gather',
            'timeout_after', 'timeout_at', 'ignore_after', 'ignore_at',
            'wait', 'clock', 'enable_cancellation', 'disable_cancellation',
-           'check_cancellation', 'set_cancellation', 'schedule', ]
+           'check_cancellation', 'set_cancellation', 'schedule', 'aside']
 
-from time import monotonic
-from .errors import TaskTimeout, TaskError, TimeoutCancellationError, UncaughtTimeoutError, CancelledError
+from .errors import *
 from .traps import *
 
 
@@ -18,10 +17,11 @@ class Task(object):
     related to execution state and debugging.
     '''
     __slots__ = (
-        'id', 'parentid', 'daemon', 'coro', '_send', '_throw', 'cycles', 'state',
+        'id', 'parentid', 'coro', 'daemon', 'name', '_send', '_throw', 'cycles', 'state',
         'cancel_func', 'future', 'sleep', 'timeout', 'exc_info', 'next_value',
         'next_exc', 'joining', 'cancelled', 'terminated', 'cancel_pending',
-        '_last_io', '_deadlines', 'task_local_storage', 'allow_cancel', 
+        '_last_io', '_deadlines', 'task_local_storage', 'allow_cancel',
+        '_asyncgen',
         '__weakref__',
     )
     _lastid = 1
@@ -33,6 +33,7 @@ class Task(object):
         self.id = taskid
         self.parentid = None       # Parent task id (if any)
         self.coro = coro           # Underlying generator/coroutine
+        self.name = getattr(coro, '__qualname__', str(coro))
         self.daemon = daemon       # Daemonic flag
         self.cycles = 0            # Execution cycles completed
         self.state = 'INITIAL'     # Execution state
@@ -55,14 +56,28 @@ class Task(object):
         self._throw = coro.throw
         self._deadlines = []       # Timeout deadlines
 
+        self._asyncgen = None      # Active async generators
+
     def __repr__(self):
-        return 'Task(id=%r, %r, state=%r)' % (self.id, self.coro, self.state)
+        return 'Task(id=%r, name=%r, %r, state=%r)' % (self.id, self.name, self.coro, self.state)
 
     def __str__(self):
-        return self.coro.__qualname__
+        return self.name
 
     def __del__(self):
         self.coro.close()
+
+    def _finalize_agen(self, agen):
+        print("Task %r -> Finalize %r" % (self, agen))
+
+    @property
+    def result(self):
+        if not self.terminated:
+            raise ResultUnavailable('Task not terminated')
+        if self.exc_info:
+            raise self.exc_info[1]
+        else:
+            return self.next_value
 
     async def join(self):
         '''
@@ -249,7 +264,7 @@ class wait(object):
     async def _init(self):
         async def wait_runner(task):
             try:
-                result = await task.join()
+                await task.join()
             except Exception:
                 pass
             await self._queue.put(task)
@@ -306,12 +321,12 @@ class _CancellationManager(object):
         # 2. If cancellation is not allowed in the outer block,
         #    the CancelledError is transformed back into a pending
         #    exception.  The outer block can certainly check for
-        #    this if it wants, but it can also just defer the 
+        #    this if it wants, but it can also just defer the
         #    cancellation to a point where cancellation is allowed again.
         #
         if isinstance(val, CancelledError):
             if not self.allow_cancel:
-                raise RuntimeError('%s must not be raised in a disable_cancellation block' % 
+                raise RuntimeError('%s must not be raised in a disable_cancellation block' %
                                    ty.__name__)
             if not self.task.allow_cancel:
                 self.cancel_pending = self.task.cancel_pending = val
@@ -354,7 +369,7 @@ async def check_cancellation(exc_type=None):
 
     If exc_type is specified, the function checks the type of the specified
     exception against the given type.  If there is a match, the exception
-    is returned and cleared. 
+    is returned and cleared.
     '''
     task = await current_task()
 
@@ -575,5 +590,57 @@ def ignore_after(seconds, coro=None, *, timeout_result=None):
     else:
         return _timeout_after_func(seconds, False, coro, ignore=True, timeout_result=timeout_result)
 
+
 from . import queue
 from . import thread
+
+# Highly experimental.  Launches a curio task in a completely isolated
+# subprocess.  As for the name, well, yeah. "async", "await", "abide",
+# "aside", etc. Work with me here!
+
+async def aside(corofunc, *args, **kwargs):
+    '''
+    Spawn a new task, but run it aside in a newly created process.
+    Returns a Task instance corresponding to a small supervisor task
+    in the caller.  The return value of task.join() is the exit code of
+    the subprocess.  Cancelling the task causes a SIGTERM signal to be
+    sent to the child.  This will be raised as a CancelledError in
+    the child (which is given an opportunity to clean up if it wants).
+
+    The newly created task shares no state with the caller. It is not
+    a process fork.  It is launched in a completely fresh Python
+    interpreter.
+
+    This function also establishes no I/O communication mechanism to
+    the newly created task.  It's not a pipe.  If you need
+    communication, use sockets or create a Channel object.
+
+    Arguments to the called coroutine are pickled and transmitted via
+    a command line arguments.  You should probably only pass small
+    data structures or metadata.  If you need to pass bulk data,
+    set up an I/O channel separately.
+    '''
+    import base64
+    import pickle
+    import sys
+    from . import subprocess
+
+    async def _aside_supervisor():
+        p = subprocess.Popen([sys.executable, '-m', 'curio.side', filename,
+                              base64.b64encode(pickle.dumps((corofunc, args, kwargs)))],
+                             start_new_session=True)
+        try:
+            return await p.wait()
+        except CancelledError as e:
+            p.terminate()
+            await p.wait()
+            raise
+
+    if sys._getframe(1).f_globals['__name__'] == '__main__':
+        filename = sys.modules['__main__'].__file__
+    else:
+        filename = ''
+
+    return await spawn(_aside_supervisor())
+
+
