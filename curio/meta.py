@@ -7,10 +7,11 @@
 
 __all__ = ['blocking', 'cpubound', 'awaitable', 'sync_only', 'AsyncABC', 'AsyncObject']
 
-import sys
+from sys import _getframe
 import inspect
 from functools import wraps
 from abc import ABCMeta, abstractmethod
+import dis
 
 from .errors import SyncIOError
 
@@ -20,11 +21,11 @@ _CO_GENERATOR = 0x0020
 _CO_COROUTINE = 0x0080
 _CO_ITERABLE_COROUTINE = 0x0100
 _CO_ASYNC_GENERATOR = 0x0200
-
+_CO_FROM_COROUTINE = _CO_COROUTINE | _CO_ITERABLE_COROUTINE | _CO_ASYNC_GENERATOR
 
 def _from_coroutine(level=2):
-    f_code = sys._getframe(level).f_code
-    if f_code.co_flags & (_CO_COROUTINE | _CO_ITERABLE_COROUTINE | _CO_ASYNC_GENERATOR):
+    f_code = _getframe(level).f_code
+    if f_code.co_flags & CO_FROM_COROUTINE:
         return True
     else:
         # Comment:  It's possible that we could end up here if one calls a function
@@ -186,3 +187,52 @@ class AsyncInstanceType(AsyncABCMeta):
 
 class AsyncObject(metaclass=AsyncInstanceType):
     pass
+
+def _is_safe_generator(code):
+    '''
+    Examine the code of an async generator to see if it appears
+    unsafe with respect to async finalization.  A generator
+    is unsafe if it utilizes any of the following constructs:
+
+    1. Use of async-code in a finally block
+
+       try:
+           yield v
+       finally:
+           await coro()
+
+    2. Use of yield inside an async context manager
+
+       async with m:
+           ...
+           yield v
+           ...
+
+    3. Use of async-code in try-except
+
+       try:
+           yield v
+       except Exception:
+           await coro()
+    '''
+    def _is_unsafe_block(instr, end_offset=-1):
+        is_generator = False
+        in_final = False
+        is_unsafe = False
+        for op in instr:
+            if op.offset == end_offset:
+                in_final = True
+            if op.opname == 'YIELD_VALUE':
+                is_generator = True
+            if op.opname == 'END_FINALLY':
+                return (is_generator, is_unsafe)
+            if op.opname in {'SETUP_FINALLY', 'SETUP_EXCEPT', 'SETUP_ASYNC_WITH'}:
+                is_g, is_u = _is_unsafe_block(instr, op.argval)
+                is_generator |= is_g
+                is_unsafe |= is_u
+            if op.opname == 'YIELD_FROM' and is_generator and in_final:
+                is_unsafe = True
+        return (is_generator, is_unsafe)
+
+    return not _is_unsafe_block(dis.get_instructions(code))[1]
+        

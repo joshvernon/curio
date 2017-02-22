@@ -1,8 +1,45 @@
 CHANGES
 -------
-
-Version 0.6 : In progress
+Version 0.7 : In Progress
 -------------------------
+02/19/2017 Added new curio.zmq module for supporting ZeroMQ.
+
+Version 0.6 : February 15, 2017
+-------------------------------
+
+02/13/2017 Added a withfd=True option to UniversalQueue.  For example:
+
+              q = UniversalQueue(withfd=True)
+
+           If added, the queue internally sets up an I/O loopback
+           where putting items on the queue write bytes to an I/O
+           channel.  The queue then spouts a fileno() method and
+           becomes pollable in other event loops.  This is potentially
+           useful strategy for integrating Curio with GUIs and other
+           kinds of foreign event loops.  
+
+02/11/2017 Added a guard for proper use of asynchronous generators
+           involving asynchronous finalization.  Must be wrapped by finalize(). 
+	   For example:
+
+           async def some_generator():
+               ...
+               try:
+                   yield val
+               finally:
+                   await action()
+
+           async def coro():
+               ...
+               async with finalize(some_generator()) as agen:
+                   async for item in agen:
+                       ...
+
+           Failure to do this results in a RuntimeError if an
+           asynchronous generator is iterated.   This is not needed for
+           generators that don't perform finalization steps involving
+           async code.
+
 02/08/2017 New Kernel.run() method implementation.  It should be backwards
            compatible, but there are two new ways of using it:
 
