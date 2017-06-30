@@ -54,30 +54,38 @@ __all__ = ["Local"]
 # cases like when a request handler spawns some small short-lived worker tasks
 # as part of its processing and those want to do logging as well.
 
+# -- Standard library
+
 import threading
-from contextlib import contextmanager
+
+# -- Curio
+
+from .activation import ActivationBase, trap_patch
+from .traps import Traps
 
 # The thread-local storage slot that points to the task-local storage dict for
 # whatever task is currently running.
 _current_task_local_storage = threading.local()
 
+class LocalsActivation(ActivationBase):
+    def activate(self, kernel):
+        @trap_patch(kernel, Traps._trap_spawn)
+        def spawn(*args, trap):
+            trap(*args)
+            _copy_tasklocal(self.current, self.current.next_value)
 
-@contextmanager
-def _enable_tasklocal_for(task):
-    # Using a full save/restore pattern here is a little paranoid, but
-    # safe. Even if someone does something silly like calling curio.run() from
-    # inside a curio coroutine.
-    try:
-        old = _current_task_local_storage.value
-    except AttributeError:
-        old = None
+    def running(self, task):
+        self.current = task
+        self.old = _set_tasklocal(task)
+        
+    def suspended(self, task, exc):
+        _current_task_local_storage.value = self.old
+        self.current = None
 
-    try:
-        _current_task_local_storage.value = task.task_local_storage
-        yield
-    finally:
-        _current_task_local_storage.value = old
-
+def _set_tasklocal(task):
+    old = getattr(_current_task_local_storage, 'value', None)
+    _current_task_local_storage.value = task.task_local_storage
+    return old
 
 # Called from _trap_spawn to implement task local inheritance.
 def _copy_tasklocal(parent, child):
@@ -97,23 +105,41 @@ def _local_dict(local):
     return _current_task_local_storage.value.setdefault(local, {})
 
 
-# make self.__dict__ point to the current task local storage
-def _patch_magic_dict(self):
-    object.__setattr__(self, '__dict__', _local_dict(self))
-
-
 class Local:
-
-    __slots__ = '__dict__',
-
+    __slots__ = ()
     def __getattribute__(self, name):
-        _patch_magic_dict(self)
-        return object.__getattribute__(self, name)
+        if name == '__dict__':
+            return _local_dict(self)
+        else:
+            try:
+                return _local_dict(self)[name]
+            except KeyError:
+                raise AttributeError('No attribute %s' % name) from None
 
     def __setattr__(self, name, value):
-        _patch_magic_dict(self)
-        object.__setattr__(self, name, value)
+        _local_dict(self)[name] = value
 
     def __delattr__(self, name):
-        _patch_magic_dict(self)
-        return object.__delattr__(self, name)
+        try:
+            del _local_dict(self)[name]
+        except KeyError:
+            raise AttributeError('No attribute %s' % name) from None
+
+    def __dir__(self):
+        return list(_local_dict(self))
+
+    # Allow pickling support. This only applies to the task-local data
+    # of whatever task calls pickle (it doesn't cover data stored for
+    # all tasks).  Likewise, unpickling creates a new Local object,
+    # but its data is only going to be set for the task that did the
+    # unpickling.  Main use of this is allowing task-local data to be
+    # carried along to subprocesses (if desired).  Naturally the
+    # data stored would have to be compatible.
+    def __getstate__(self):
+        return _local_dict(self)
+
+    def __setstate__(self, state):
+        d = _local_dict(self)
+        d.clear()
+        d.update(state)
+

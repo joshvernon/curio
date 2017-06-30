@@ -14,8 +14,8 @@ is a function defined using ``async def``.  For example::
 
 Coroutines call other coroutines using ``await``. For example::
 
-    async def main():
-          s = await hello('Guido')
+    async def main(name):
+          s = await hello(name)
           print(s)
 
 Unlike a normal function, a coroutine can never run all on its own.
@@ -25,7 +25,7 @@ executed by a low-level kernel using the ``run()`` function. For
 example::
 
     import curio
-    curio.run(main())
+    curio.run(main, 'Guido')
 
 When executed by curio, a coroutine is considered to be a "Task."  Whenever
 the word "task" is used, it refers to the execution of a coroutine.
@@ -36,62 +36,80 @@ The Kernel
 All coroutines in curio are executed by an underlying kernel.  Normally, you would
 run a top-level coroutine using the following function:
 
-.. function:: run(coro, *, log_errors=True, selector=None,
-              with_monitor=False,
-              warn_if_task_blocks_for=None, **other_kernel_args)
+.. function:: run(corofunc, *args, debug=None, selector=None,
+              with_monitor=False, timeout=None, **other_kernel_args)
 
-   Run the coroutine *coro* to completion and return its final return
-   value.  If *log_errors* is ``True``, a traceback is written to the
-   log on crash.  If *with_monitor* is ``True``, then the monitor
+   Run the async function *corofunc* to completion and return its
+   final return value.  *args* are the arguments provided to
+   *corofunc*.  If *with_monitor* is ``True``, then the monitor
    debugging task executes in the background.  If *selector* is given,
    it should be an instance of a selector from the :mod:`selectors
-   <python:selectors>` module. If *warn_if_task_blocks_for* is given,
-   then any tasks which blocks the event loop for the given number of
-   seconds will trigger a ``curio.BlockingTaskWarning``.
+   <python:selectors>` module.  *debug* is a list of optional 
+   debugging features.  See the section on debugging for more detail.
+   *timeout* sets an initial timeout on the supplied coroutine.
 
 If you are going to repeatedly run coroutines one after the other, it
 will be more efficient to create a ``Kernel`` instance and submit
 them using its ``run()`` method as described below:
 
-.. class:: Kernel(log_errors=True, selector=None, with_monitor=False)
+.. class:: Kernel(selector=None, debug=None):
 
    Create an instance of a curio kernel.  The arguments are the same
    as described above for the :func:`run()` function.
 
 There is only one method that may be used on a :class:`Kernel` outside of coroutines.
 
-.. method:: Kernel.run(coro=None, *, shutdown=False)
+.. method:: Kernel.run(corofunc=None, *args, timeout=None, shutdown=False)
 
    Runs the kernel until all non-daemonic tasks have finished
-   execution.  *coro* is a coroutine to run as a task.  If *shutdown*
+   execution.  *corofunc* is an async function to run as a task.
+   *args* are the arguments given to that function.  *timeout* specified
+   a timeout to put on the initial task.  If *shutdown*
    is ``True``, the kernel will cancel all daemonic tasks and perform
    a clean shutdown once all regular tasks have completed.  Calling
    this method with no coroutine and *shutdown* set to ``True``
    will make the kernel cancel all remaining tasks and perform a
-   clean shut down.
+   clean shut down. 
 
 If submitting multiple tasks, one after another, from synchronous
 code, consider using a kernel as a context manager.  For example::
 
     with Kernel() as kernel:
-        kernel.run(coro1())
-        kernel.run(coro2())
+        kernel.run(corofunc1)
+        kernel.run(corofunc2)
         ...
     # Kernel shuts down here
+
+When submitted a task to the Kernel, you can either provide an async
+function and calling arguments or you can provide an instantiated
+coroutine.  For example::
+
+    async def hello(name):
+        print('hello', name)
+
+    run(hello, 'Guido')    # Preferred
+    run(hello('Guido'))    # Ok
+
+This convention is observed by nearly all other functions that accept
+coroutines (e.g., spawning tasks, waiting for timeouts, etc.).  As a
+general rule, the first form of providing a function and arguments
+should be preferred. This form of calling is required for certain 
+parts of Curio so you're code will be more consistent if you use it.
 
 Tasks
 -----
 
 The following functions are defined to help manage the execution of tasks.
 
-.. asyncfunction:: spawn(coro, daemon=False)
+.. asyncfunction:: spawn(corofunc, *args, daemon=False)
 
-   Create a new task that runs the coroutine *coro*.  Returns a
-   :class:`Task` instance as a result.  The *daemon* option, if
-   supplied, specifies that the new task will run indefinitely in the
-   background.  Curio only runs as long as there are non-daemonic
-   tasks to execute.  Note: a daemonic task will still be cancelled if
-   the underlying kernel is shut down.
+   Create a new task that runs the async function *corofunc*.  *args*
+   are the arguments provided to *corofunc*. Returns a :class:`Task`
+   instance as a result.  The *daemon* option, if supplied, specifies
+   that the new task will run indefinitely in the background.  Curio
+   only runs as long as there are non-daemonic tasks to execute.
+   Note: a daemonic task will still be cancelled if the underlying
+   kernel is shut down.
 
 .. asyncfunction:: current_task()
 
@@ -115,6 +133,11 @@ that serves as a kind of wrapper around the underlying coroutine that's executin
    exception contains the actual exception raised by the task when it crashed.
    If called on a task that has been cancelled, the ``__cause__``
    attribute is set to :exc:`curio.TaskCancelled`.
+
+.. asyncmethod:: Task.wait()
+
+   Like ``join()`` but doesn't return any value.  The caller must obtain the
+   result of the task separately via the ``result`` or ``exception`` attribute.
 
 .. asyncmethod:: Task.cancel(blocking=True)
 
@@ -156,10 +179,15 @@ The following public attributes are available of :class:`Task` instances:
    if you're trying to figure out if a task is running or not. Or if you're
    trying to monitor a task's progress.
 
-.. attribute:: Task.exc_info
+.. attribute:: Task.result
 
-   A tuple of exception information obtained from :py:func:`sys.exc_info` if the
-   task crashes for some reason.  Potentially useful for debugging.
+   The result of a task, if completed.  If accessed before the task terminated,
+   a ``RuntimeError`` exception is raised.  If the task crashed with an exception,
+   that exception is reraised on access.
+
+.. attribute:: Task.exception
+
+   Exception raised by a task, if any.
 
 .. attribute:: Task.cancelled
 
@@ -168,6 +196,165 @@ The following public attributes are available of :class:`Task` instances:
 .. attribute:: Task.terminated
 
    A boolean flag that indicates whether or not the task has run to completion.
+
+
+Task Groups
+-----------
+
+Curio provides a mechanism for grouping tasks together and managing their
+execution.  This includes cancelling tasks as a group, waiting for tasks
+to finish, or watching a group of tasks as they finish.   To do this, create
+a ``TaskGroup`` instance.
+
+.. class:: TaskGroup(tasks=(), *, wait=all, name=None)
+
+   A class representing a group of executing tasks.  *tasks* is an
+   optional set of existing tasks to put into the group.  New tasks
+   can later be added using the ``spawn()`` method below. *wait*
+   specifies the policy used for waiting for tasks.  See the ``join()``
+   method below.
+
+The following methods are supported on ``TaskGroup`` instances:
+
+.. asyncmethod:: TaskGroup.spawn(corofunc, *args, ignore_result=False)
+
+   Create a new task that's part of the group.  Returns a ``Task`` instance.
+   The *ignore_result* flag indicates whether or not the group cares about the 
+   task's final result.  If specified, the result of the task is ignored.
+   The task is still considered part of the group for purposes of cancellation
+   however (i.e., if the task group is cancelled, any running tasks with an ignored result
+   in the group are also cancelled).   
+
+.. asyncmethod:: TaskGroup.add_task(coro)
+
+   Adds an already existing task to the task group. 
+
+.. asyncmethod:: TaskGroup.next_done(*, cancel_remaining=False)
+
+   Returns the next completed task.  Returns ``None`` if no more tasks remain.
+   A ``TaskGroup`` may also be used as an asynchronous iterator. If the
+   *cancel_remaining* option is given, all remaining tasks are cancelled.
+
+.. asyncmethod:: TaskGroup.join(*, wait=all)
+
+   Wait for tasks in the group to terminate.  If *wait* is `all`, then
+   wait for all tasks to completee.  If *wait* is `any` then wait for
+   any task to complete and cancel any remaining tasks. 
+   If any task returns with an error, then all remaining tasks are
+   immediately cancelled and a ``TaskGroupError`` exception is raised.
+   If the ``join()`` operation itself is cancelled, all remaining
+   tasks in the group are also cancelled.  If a ``TaskGroup`` is used
+   as a context manager, the ``join()`` method is called on
+   context-exit.
+
+.. asyncmethod:: TaskGroup.cancel_remaining()
+
+   Cancel all remaining tasks.
+
+.. attribute:: TaskGroup.completed
+
+   The first task that completed in the group.  Useful when used in
+   combination with the ``wait=any`` option on ``join()``.   
+
+
+The preferred way to use a ``TaskGroup`` is as a context manager.  For
+example, here is how you can create a group of tasks, wait for them
+to finish, and collect their results::
+
+    async with TaskGroup() as g:
+        t1 = await g.spawn(func1)
+        t2 = await g.spawn(func2)
+        t3 = await g.spawn(func3)
+
+    # all tasks done here
+    print('t1 got', t1.result)
+    print('t2 got', t2.result)
+    print('t3 got', t3.result)
+
+Here is how you would launch tasks and collect their results in the
+order that they complete::
+
+    async with TaskGroup() as g:
+        t1 = await g.spawn(func1)
+        t2 = await g.spawn(func2)
+        t3 = await g.spawn(func3)
+        async for task in g:
+            print(task, 'completed.', task.result)
+
+If you wanted to launch tasks and exit when the first one has finished,
+use the ``wait=any`` option like this::
+
+    async with TaskGroup(wait=any) as g:
+        await g.spawn(func1)
+        await g.spawn(func2)
+        await g.spawn(func3)
+
+    result = g.completed.result    # First completed task
+
+If any exception is raised inside the task group context, all launched
+tasks are cancelled and the exception is reraised.  For example::
+
+    try:
+        async with TaskGroup() as g:
+            t1 = await g.spawn(func1)
+            t2 = await g.spawn(func2)
+            t3 = await g.spawn(func3)
+            raise RuntimeError()
+    except RuntimeError:
+        # All launched tasks will have terminated or been cancelled
+        assert t1.terminated
+        assert t2.terminated
+        assert t3.terminated
+
+This behavior also applies to features such as a timeout. For
+example::
+
+    try:
+        async with timeout_after(10):
+            async with TaskGroup() as g:
+                t1 = await g.spawn(func1)
+                t2 = await g.spawn(func2)
+                t3 = await g.spawn(func3)
+
+            # All tasks cancelled here on timeout
+
+    except TaskTimeout:
+        # All launched tasks will have terminated or been cancelled
+        assert t1.terminated
+        assert t2.terminated
+        assert t3.terminated
+
+The timeout exception itself is only raised in the code that's using
+the task group.  Child tasks are cancelled using the ``cancel()`` 
+method and would receive a ``TaskCancelled`` exception.
+
+If any launched tasks exit with an exception other than
+``TaskCancelled``, a ``TaskGroupError`` exception is raised.  For
+example::
+
+    async def bad1():
+        raise ValueError('bad value')
+
+    async def bad2():
+        raise RuntimeError('bad run')
+
+    try:
+        async with TaskGroup() as g:
+            await g.spawn(bad1)
+            await g.spawn(bad2)
+            await sleep(1)
+    except TaskGroupError as e:
+        print('Failed:', e.errors)   # Print set of exception types
+	for task in e:
+	    print('Task', task, 'failed because of:', task.exception)
+
+A ``TaskGroupError`` exception contains more information about what happened
+with the tasks.  The ``errors`` attribute is a set of exception types
+that took place.  In this example, it would be the set ``{ ValueError, RuntimeError }``.
+To get more specific information, you can iterate over the exception (or look at its
+``failed`` attribute).   This will produce all of the tasks that failed.  The
+``task.exception`` attribute can be used to get specific exception information 
+for that task.
 
 Task local storage
 ------------------
@@ -216,12 +403,12 @@ Timeouts
 Any blocking operation in curio can be cancelled after a timeout.  The following
 functions can be used for this purpose:
 
-.. asyncfunction:: timeout_after(seconds, coro=None)
+.. asyncfunction:: timeout_after(seconds, corofunc=None, *args)
 
    Execute the specified coroutine and return its result. However,
    issue a cancellation request to the calling task after *seconds*
    have elapsed.  When this happens, a :py:exc:`curio.TaskTimeout`
-   exception is raised.  If *coro* is ``None``, the result of this
+   exception is raised.  If *corofunc* is ``None``, the result of this
    function serves as an asynchronous context manager that applies a
    timeout to a block of statements.
 
@@ -233,16 +420,16 @@ functions can be used for this purpose:
    a ``curio.UncaughtTimeoutError`` is raised in the outer
    timeout.
 
-.. asyncfunction:: ignore_after(seconds, coro=None, *, timeout_result=None)
+.. asyncfunction:: ignore_after(seconds, corofunc=None, *args, timeout_result=None)
 
    Execute the specified coroutine and return its result. Issue a
    cancellation request after *seconds* have elapsed.  When a timeout
    occurs, no exception is raised.  Instead, ``None`` or the value of
-   *timeout_result* is returned.  If *coro* is ``None``, the result is
+   *timeout_result* is returned.  If *corofunc* is ``None``, the result is
    an asynchronous context manager that applies a timeout to a block
-   of statements.  For the context manager case, ``result`` attribute
-   of the manager is set to ``None`` or the value of *timeout_result*
-   if the block was cancelled.
+   of statements.  For the context manager case, the resulting 
+   context manager object has an ``expired`` attribute set to ``True`` if time
+   expired.
 
    Note: :func:`ignore_after` may also be composed with other timeout
    operations.  ``curio.TimeoutCancellationError`` and
@@ -253,7 +440,7 @@ Here is an example that shows how these functions can be used::
 
     # Execute coro(args) with a 5 second timeout
     try:
-        result = await timeout_after(5, coro(args))
+        result = await timeout_after(5, coro, args)
     except TaskTimeout as e:
         result = None
 
@@ -272,7 +459,7 @@ the exception handling behavior when time expires.  The latter function
 returns ``None`` instead of raising an exception which might be more
 convenient in certain cases. For example::
 
-    result = await ignore_after(5, coro(args))
+    result = await ignore_after(5, coro, args)
     if result is None:
         # Timeout occurred (if you care)
         ...
@@ -281,10 +468,8 @@ convenient in certain cases. For example::
     async with ignore_after(5) as s:
         await coro1(args)
         await coro2(args)
-        ...
-        s.result = successful_result
 
-    if s.result is None:
+    if s.expired:
         # Timeout occurred
 
 It's important to note that every curio operation can be cancelled by timeout.
@@ -295,7 +480,7 @@ appropriate.
 Cancellation Control
 --------------------
 
-.. function:: disable_cancellation(coro=None)
+.. function:: disable_cancellation(corofunc=None, *args)
 
    Disables the delivery of cancellation-related exceptions to the
    calling task.  Cancellations will be delivered to the first
@@ -303,7 +488,7 @@ Cancellation Control
    reenabled.  This function may be used to shield a single coroutine 
    or used as a context manager (see example below).
    
-.. function:: enable_cancellation(coro=None)
+.. function:: enable_cancellation(corofunc=None, *args)
 
    Reenables the delivery of cancellation-related exceptions.  This
    function is used as a context manager.  It may only be used
@@ -318,7 +503,6 @@ Cancellation Control
    immediately.  If cancellation is not allowed, it returns the
    pending cancellation exception instance (if any).  Returns ``None``
    if no cancellation is pending.
-
 
 Use of these functions is highly specialized and is probably best avoided.
 Here is an example that shows typical usage::
@@ -341,7 +525,7 @@ If you only need to shield a single operation, you can write statements like thi
 
     async def coro():
         ...
-        await disabled_cancellation(some_operation())
+        await disabled_cancellation(some_operation, x, y, z)
         ...
 
 This is shorthand for writing the following::
@@ -349,7 +533,7 @@ This is shorthand for writing the following::
     async def coro():
         ...
         async with disable_cancellation():
-            await some_operation()
+            await some_operation(x, y, z)
         ...
 
 See the section on cancellation in the Curio Developer's Guide for more detailed information.
@@ -361,16 +545,16 @@ Performing External Work
 Sometimes you need to perform work outside the kernel.  This includes CPU-intensive
 calculations and blocking operations.  Use the following functions to do that:
 
-.. asyncfunction:: run_in_process(callable, *args, **kwargs)
+.. asyncfunction:: run_in_process(callable, *args)
 
-   Run ``callable(*args, **kwargs)`` in a separate process and returns
+   Run ``callable(*args)`` in a separate process and returns
    the result.  If cancelled, the underlying
    worker process (if started) is immediately cancelled by a ``SIGTERM``
    signal.
 
-.. asyncfunction:: run_in_thread(callable, *args, **kwargs)
+.. asyncfunction:: run_in_thread(callable, *args)
 
-   Run ``callable(*args, **kwargs)`` in a separate thread and return
+   Run ``callable(*args)`` in a separate thread and return
    the result.  If the calling task is cancelled, the underlying
    worker thread (if started) is set aside and sent a termination
    request.  However, since there is no underlying mechanism to
@@ -383,7 +567,7 @@ calculations and blocking operations.  Use the following functions to do that:
    threads should have a timeout or some other mechanism that
    puts a bound on execution time.
 
-.. asyncfunction:: block_in_thread(callable, *args, **kwargs)
+.. asyncfunction:: block_in_thread(callable, *args)
 
    The same as ``run_in_thread()``, but guarantees that only
    one background thread is used for each unique callable
@@ -397,9 +581,9 @@ calculations and blocking operations.  Use the following functions to do that:
    Curio tasks and they all decided to block on a shared thread queue,
    using this would be much more efficient than ``run_in_thread()``.
 
-.. asyncfunction:: run_in_executor(exc, callable, *args, **kwargs)
+.. asyncfunction:: run_in_executor(exc, callable, *args)
 
-   Run ``callable(*args, **kwargs)`` callable in a user-supplied
+   Run ``callable(*args)`` callable in a user-supplied
    executor and returns the result. *exc* is an executor from the
    :py:mod:`concurrent.futures` module in the standard library.  This
    executor is expected to implement a
@@ -702,7 +886,7 @@ The :mod:`curio.ssl` module provides curio-compatible functions for creating an 
 layer around curio sockets.  The following functions are redefined (and have the same
 calling signature as their counterparts in the standard :mod:`ssl` module:
 
-.. function:: wrap_socket(*args, **kwargs)
+.. asyncfunction:: wrap_socket(*args, **kwargs)
 
 .. asyncfunction:: get_server_certificate(*args, **kwargs)
 
@@ -1568,12 +1752,12 @@ Curio's synchronization primitives aren't safe to use with externel threads or
 processes.   However, Curio can work with existing thread or process-level
 synchronization primitives if you use the :func:`abide` function.
 
-.. asyncfunction:: abide(op, *args, **kwargs)
+.. asyncfunction:: abide(op, *args, reserve_thread=False)
 
    Execute an operation in a manner that safely works with async code.
-   If ``op`` is a coroutine function, then ``op(*args, **kwargs)`` is
+   If ``op`` is a coroutine function, then ``op(*args)`` is
    returned.  If ``op`` is a synchronous function, then
-   ``block_in_thread(op, *args, **kwargs)`` is returned.  In both
+   ``block_in_thread(op, *args)`` is returned.  In both
    cases, you would use ``await`` to obtain the result.  If ``op`` is
    an asynchronous context manager, it is returned unmodified.  If
    ``op`` is a synchronous context manager, it is wrapped in a manner
@@ -1900,61 +2084,112 @@ both a threaded and asynchronous world.
 Signals
 -------
 
-Unix signals are managed by the :class:`SignalSet` class.   This class operates
-as an asynchronous context manager.  The recommended usage looks like this::
+One way to manage Unix signals is to use the :class:`SignalQueue` class.
+This class operates as a queue, but you use it with an asynchronous context
+manager to enable the delivery of signals.  The usage looks like this::
 
     import signal
 
     async def coro():
         ...
-        async with SignalSet(signal.SIGUSR1, signal.SIGHUP) as sigset:
+        async with SignalQueue(signal.SIGUSR1, signal.SIGHUP) as sig_q:
               ...
-              signo = await sigset.wait()
+              signo = await sig_q.get()
               print('Got signal', signo)
               ...
 
-For all of the statements inside the context-manager, signals will
-be queued.  The `sigset.wait()` operation will return received
-signals one at a time from the signal queue.
+For all of the statements inside the context-manager, signals will be
+queued in the background.  The ``sig_q.get()`` operation will return
+received signals one at a time from the queue.  Even though this queue
+contains signals as they were received by Python, be aware that
+"reliable signaling" is not guaranteed.  Python only runs signal
+handlers periodically in the background and multiple signals might be
+collapsed into a single signal delivery.
 
-Signals can be temporarily ignored using a normal context manager::
+Another way to receive signals is to use the :class:`SignalEvent` class.
+This is particularly useful for one-time signals such as the keyboard
+interrupt or ``SIGTERM`` signal.  Here's an example of how you might
+use a signal event to shutdown a task::
+
+    Goodbye = SignalEvent(signal.SIGINT, signal.SIGTERM)
+
+    async def child():
+        while True:
+            print('Spinning')
+            await sleep(1)
 
     async def coro():
-        ...
-        sigset = SignalSet(signal.SIGINT)
-        with sigset.ignore():
-              ...
-              # Signals temporarily disabled
-              ...
+        task = await spawn(child)
+        await Goodbye.wait()
+	print('Got signal. Goodbye')    
+	await task.cancel()
 
-Caution: Signal handling only works if the curio kernel is running in Python's
-main execution thread.  Also, mixing signals with threads, subprocesses, and other
-concurrency primitives is a well-known way to make your head shatter into
-small pieces.  Tread lightly.
+.. class:: SignalQueue(*signals)
 
-.. class:: SignalSet(*signals)
+   Create a queue for receiving signals. *signals* is one or more
+   signals as defined in the built-in :mod:`signal` module.  A 
+   ``SignalQueue`` is a proper queue.  Use the ``get()`` method
+   to receive a signal.  Other queue methods can be used as well.
+   For example, you can call ``put()`` to manually put a signal
+   number on the queue if you want (possibly useful in testing).
+   The queue must be used as an asynchronous-context manager for
+   signal delivery to enabled.
 
-   Represents a set of one or more Unix signals.  *signals* is a list of
-   signals as defined in the built-in :mod:`signal` module.
+.. class:: SignalEvent(*signals)
 
-The following methods are available on a :class:`SignalSet` instance. They
-may only be used in coroutines.
+   Create an event that allows signal waiting.  Use the ``wait()``
+   method to wait for arrival.  This is a proper ``Event`` object.
+   You can use other methods such as ``set()`` or ``is_set()``.
+   		 
 
-.. asyncmethod:: SignalSet.wait()
+The following functions are also defined for signal management::
 
-   Wait for one of the signals in the signal set to arrive. Returns
-   the signal number of the signal received.  Normally this method is
-   used inside an ``async with`` statement because this allows
-   received signals to be properly queued.  It can be used in
-   isolation, but be aware that this will only catch a single signal
-   right at that line of code.  It's possible that you might lose
-   signals if you use this method outside of a context manager.
+.. function::ignore_signals(signals)
 
-.. method:: SignalSet.ignore()
+   Return a context manager in which signals are ignored. ``signals`` is
+   a set of signal numbers from the ``signal`` module.  This
+   function may only be called from Python's main execution thread.
+   Note that signals are not delivered asynchronous to Curio via 
+   callbacks (they only come via queues or events). Because of this,
+   it's rarely necessary to mask signals.  You may be better off
+   blocking cancellation with the ``disable_cancellation()`` function
+   instead.
 
-   Returns a context manager wherein signals from the signal set are
-   temporarily disabled.  Note: This is a normal context manager--
-   use a normal ``with``-statement.
+.. function::enable_signals(signals)
+
+   Returns a context manager in which the Curio signaling system is
+   initialized for a given set of signals.  This function may only
+   be called by Python's main execution thread and is only needed
+   if you intend to run Curio in a separate thread.  ``signals``
+   should specify the complete set of signals that will be caught
+   in the application.   The main reason this is needed is that
+   signals can only be initialized in Python's main thread. If you
+   don't do this and you attempt to run Curio in a separate thread,
+   the other signal-related functionality will fail.
+
+These last two functions are mainly intended for use in setting up
+the runtime environment for Curio.  For example, if you needed to run
+Curio in a separate thread and your code involved signal handling,
+you'd need to do this::
+
+    import threading
+    import curio
+    import signal
+
+    allowed_signals = { signal.SIGINT, signal.SIGTERM, signal.SIGUSR1 }
+
+    async def main():
+         ...
+
+    if __name__ == '__main__':
+       with curio.enable_signals(allowed_signals):
+           t = threading.Thread(target=curio.run, args=(main,))
+           t.start()
+	   ...
+           t.join()
+
+Again, keep in mind you don't need to do this is Curio is running in the
+main thread.  Running in a separate thread is more of a special case.
 
 Asynchronous Metaprogramming
 ----------------------------
@@ -2176,44 +2411,22 @@ cancellation point.
    Blocking trap. Sleep until a result is set on *future*.  *future*
    is an instance of :py:class:`concurrent.futures.Future`.
 
-.. asyncfunction:: _join_task(task)
-
-   Blocking trap. Sleep until the indicated *task* completes. After
-   this trap completes, then the task's return value or raised
-   exception information is available in ``task.next_value`` or
-   ``task.exc_info``, respectively.
-
 .. asyncfunction:: _cancel_task(task)
 
    Synchronous trap. Cancel the indicated *task*.
 
-.. asyncfunction:: _wait_on_ksync(ksync, state_name)
+.. asyncfunction:: _scheduler_wait(sched, state_name)
 
-   Blocking trap.  Go to sleep on a kernel synchronization primitive. *ksync* is an instance of
-   ``curio.kernel.KernelSyncBase``. *state_name* is the name of the wait state (used in
+   Blocking trap.  Go to sleep on a kernel scheduler primitive. *sched* is an instance of
+   ``curio.sched.SchedBase``. *state_name* is the name of the wait state (used in
    debugging).
 
-.. asyncfunction:: _reschedule_tasks(ksync, n=1, value=None, exc=None)
+.. asyncfunction:: _scheduler_wake(sched, n=1, value=None, exc=None)
 
    Synchronous trap. Reschedule one or more tasks from a
-   kernel synchronization primitive. *n* is the
+   kernel scheduler primitive. *n* is the
    number of tasks to release. *value* and *exc* specify the return
    value or exception to raise in the task when it resumes execution.
-
-.. asyncfunction:: _sigwatch(sigset)
-
-   Synchronous trap. Tell the kernel to start queuing signals in the
-   given signal set *sigset*.
-
-.. asyncfunction:: _sigunwatch(sigset)
-
-   Synchronous trap. Tell the kernel to stop queuing signals in the
-   given signal set.
-
-.. asyncfunction:: _sigwait(sigset)
-
-   Blocking trap. Wait for the arrival of a signal in a given signal
-   set. Returns the signal number of the received signal.
 
 .. asyncfunction:: _get_kernel()
 
@@ -2234,13 +2447,6 @@ cancellation point.
    Synchronous trap. Unset a timeout in the currently running
    task. *previous* is the value returned by the _set_timeout() call
    used to set the timeout.
-
-.. asyncfunction:: _ksync_reschedule_function(queue)
-
-   Synchronous trap. Return a function that allows tasks to be
-   rescheduled on a kernel sychronization primitive without the use of
-   await.  Can be used in synchronous code as long as it runs in the
-   same thread as the Curio kernel.
 
 .. asyncfunction:: _clock():
 

@@ -3,6 +3,7 @@
 import pytest
 from curio import *
 from curio.thread import AWAIT, AsyncThread, async_thread
+from curio.file import aopen
 
 def simple_func(x, y):
     AWAIT(sleep(0.5))     # Execute a blocking operation
@@ -69,7 +70,7 @@ def test_thread_cancel_result(kernel):
             result = AWAIT(simple_coro(2, 3))
 
     async def main():
-        t = await spawn(async_thread(func)())
+        t = await spawn(async_thread(func))
         await sleep(0.25)
         await t.cancel()
 
@@ -85,7 +86,7 @@ def test_thread_sync(kernel):
         lock = Lock()
         async with lock:
             results.append('main')
-            t = await spawn(async_thread(func)(lock))
+            t = await spawn(async_thread(func), lock)
             await sleep(0.5)
             results.append('main done')
         await t.join()
@@ -118,13 +119,67 @@ def test_thread_disable_cancellation(kernel):
             AWAIT(sleep(2))
 
     async def main():
-        t = await spawn(async_thread(func)())
+        t = await spawn(async_thread(func))
         await sleep(0.5)
         await t.cancel()
 
     kernel.run(main())
 
+import os
+dirname = os.path.dirname(__file__)
+testinput = os.path.join(dirname, 'testdata.txt')
 
+def test_thread_read(kernel):
+    def func():
+        with aopen(testinput, 'r') as f:
+            data = AWAIT(f.read())
+            assert f.closed == False
+
+        assert data == 'line 1\nline 2\nline 3\n'
+
+    async def main():
+        t = await spawn(async_thread(func))
+        await t.join()
+
+    kernel.run(main())
+
+import curio.subprocess as subprocess
+import sys
+
+def test_subprocess_popen(kernel):
+    def func():
+        with subprocess.Popen([sys.executable, '-c', 'print("hello")'], stdout=subprocess.PIPE) as p:
+            data = AWAIT(p.stdout.read())
+            assert data == b'hello\n'
+
+    async def main():
+        t = await spawn(async_thread(func))
+        await t.join()
+
+    kernel.run(main())
+
+def test_task_group_thread(kernel):
+    results = []
+    async def add(x, y):
+        return x + y
+
+    def task():
+        task1 = AWAIT(spawn(add, 1, 1))
+        task2 = AWAIT(spawn(add, 2, 2))
+        task3 = AWAIT(spawn(add, 3, 3))
+        w = TaskGroup([task1, task2, task3])
+        with w:
+            for task in w:
+                result = AWAIT(task.join())
+                results.append(result)
+
+    async def main():
+        t = AsyncThread(target=task)
+        await t.start()
+        await t.join()
+    
+    kernel.run(main)
+    assert results == [2, 4, 6]
             
                  
 

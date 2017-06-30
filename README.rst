@@ -7,27 +7,26 @@ out to thread and process pools.  It uses Python coroutines and the
 explicit async/await syntax introduced in Python 3.5.  Its programming
 model is based on cooperative multitasking and existing programming
 abstractions such as threads, sockets, files, subprocesses, locks, and
-queues.  You'll find it to be small and fast.
+queues.  You'll find it to be small, fast, and fun.
 
 Important Disclaimer
 --------------------
 
 Curio is experimental software that currently only works on POSIX
-systems (OS X, Linux, etc.).  It is a work in progress and it may
-change at any time.  Although curio can be installed via pip, the
-version uploaded on PyPI is only updated occasionally.  You'll
-probably get better results using the version cloned from github.
-You'll also want to make sure you're using Python 3.6. Of course, your
-mileage might vary.
+systems (OS X, Linux, etc.).  Although it is a work in progress, it is
+extensively documented and has a fairly comprehensive test suite.
+Just be aware that the programming API is fluid and could change at
+any time.  Although curio can be installed via pip, the version
+uploaded on PyPI is only updated occasionally.  You'll probably get
+better results using the version cloned from github.  You'll also want
+to make sure you're using Python 3.6. Of course, your mileage might
+vary.
 
 News
 ----
-The version 0.6 "release" of curio has a lot of improvements and cleaned
-up APIs.  However, it's mainly just a snapshot that represents the state
-of Curio before it starts utilizing more features of Python 3.6. For the
-best results, you should use Python 3.6 and Curio from github. 
-
-The verion 0.7 version (in progress) requires the use of Python 3.6.
+The version 0.7 "release" of curio has a lot of improvements, cleaned up
+APIs, and new features.   For now, it still works on Python 3.5.  However,
+new versions of Curio may start to use Python-3.6 features.  
 
 Quick install
 -------------
@@ -55,7 +54,7 @@ Here is a simple TCP echo server implemented using sockets and curio:
         async with sock:
             while True:
                 client, addr = await sock.accept()
-                await spawn(echo_client(client, addr))
+                await spawn(echo_client, client, addr)
     
     async def echo_client(client, addr):
         print('Connection from', addr)
@@ -68,7 +67,7 @@ Here is a simple TCP echo server implemented using sockets and curio:
         print('Connection closed')
 
     if __name__ == '__main__':
-        run(echo_server(('',25000)))
+        run(echo_server, ('',25000))
 
 If you have programmed with threads, you find that curio looks similar.
 You'll also find that the above server can handle thousands of simultaneous 
@@ -94,7 +93,7 @@ of the code:
         print('Connection closed')
 
     if __name__ == '__main__':
-        run(tcp_server('', 25000, echo_client))
+        run(tcp_server, '', 25000, echo_client)
 
 This is only a small sample of what's possible.  Read the `official documentation
 <https://curio.readthedocs.io>`_ for more in-depth coverage.  The `tutorial 
@@ -112,17 +111,22 @@ threads and processes. The task model fully supports cancellation,
 timeouts, monitoring, and other features critical to writing reliable
 code.
 
-Projects Using Curio
---------------------
-
-Please feel free to add your project here.
-
 Talks Related to Curio
 ----------------------
 
 * `Fear and Awaiting in Async <https://www.youtube.com/watch?v=E-1Y4kSsAFc>`_, Keynote talk by David Beazley at PyOhio 2016.
 
 * `Topics of Interest (Async) <https://www.youtube.com/watch?v=ZzfHjytDceU>`_, Keynote talk by David Beazley at Python Brasil 2015.
+
+Other Resources
+---------------
+
+* `Trio <https://github.com/python-trio/trio/>`_ A different I/O library that's been inspired by Curio and shares many of its overarching ideas.
+
+* `Some thoughts on asynchronous API design in a post-async/await world <https://vorpus.org/blog/some-thoughts-on-asynchronous-api-design-in-a-post-asyncawait-world/>`_, by Nathaniel Smith.
+
+* `A Tale of Event Loops <https://github.com/AndreLouisCaron/a-tale-of-event-loops>`_, by André Caron.
+
 
 The Big Question: Why?
 ----------------------
@@ -188,30 +192,32 @@ combined with any per-user limits imposed by the operating system.
  
 **Q: Can curio interoperate with other event loops?**
 
-A: At this time, no.  However, curio is a young project. It's
-something that might be added later.
+A: It depends on what you mean by the word "interoperate."  Curio's
+preferred mechanism of communication with the external world is a
+queue.  It is possible to communicate between Curio, threads, and
+other event loops using queues.  Curio can also submit work to 
+the ``asyncio`` event loop with the provision that it must be running
+separately in a different thread.
 
 **Q: How fast is curio?**
 
 A: In rough benchmarking of the simple echo server shown here, Curio
-runs between 75-150% faster than comparable code using coroutines in
-``asyncio``, 5-40% faster than the same coroutines running on
-``uvloop`` (an alternative event-loop for ``asyncio``), and at about
-the same speed as gevent.  This is on OS-X so your mileage might
+runs about 20% faster than comparable code using coroutines in
+``asyncio`` on Python 3.6. This is on OS-X so your mileage might
 vary. Curio is not as fast as servers that utilize threads, low-level
 callback-based event handling (e.g., low-level protocols in
 ``asyncio``), or direct coding in assembly language.  However, those
 approaches also don't involve coroutines (which is the whole point of
 Curio). See the ``examples/benchmark`` directory of the distribution
-for various testing programs.
+for various testing programs.  
 
 **Q: Is curio going to evolve into a framework?**
 
-A: No. The current goal is merely to provide a small, simple library
+A: Unclear. The current goal is merely to provide a small, simple library
 for performing concurrent I/O, task synchronization, and common
 systems operations involving interprocess communication and
 subprocesses. It is not anticipated that curio itself would evolve
-into a framework for implementing application level protocols such as
+into a giant framework for implementing application level protocols such as
 HTTP.  However, it might serve as a foundation for other packages that
 want to provide that kind of functionality.
 
@@ -220,7 +226,8 @@ want to provide that kind of functionality.
 A: Future work on curio will primarily focus on features related to
 performance, debugging, diagnostics, and reliability.  A main goal is
 to provide a robust environment for running and controlling concurrent
-tasks.
+tasks.  However, it's also supposed to be fun. A lot of time is
+being spent thinking about the API and how to make it pleasant.
 
 **Q: Is there a Curio sticker?**
 
@@ -228,8 +235,13 @@ A: No.
 
 **Q: How big is curio?**
 
-A: The complete library currently consists of fewer than 2500 lines of
-source statements.  This does not include blank lines and comments.
+A: The complete library currently consists of about 3200 statements
+as reported in coverage tests.
+
+**Q: I see these warnings about not using Curio. What should I do?**
+
+A: Has programming taught you nothing? Warnings are meant to be ignored.
+Of course you should use Curio.
 
 **Q: Can I contribute?**
 
@@ -255,6 +267,7 @@ Contributors
 - Brett Cannon
 - Nathaniel Smith
 - Alexander Zhukov
+- Laura Dickinson
 
 About
 -----

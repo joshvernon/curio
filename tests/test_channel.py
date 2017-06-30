@@ -2,9 +2,9 @@
 
 import pytest
 from socket import *
-from curio.channel import Connection, Channel
+from curio.channel import Connection, Channel, AuthenticationError
 from curio.io import SocketStream
-from curio import spawn, sleep, CancelledError, TaskTimeout, timeout_after
+from curio import spawn, sleep, CancelledError, TaskTimeout, timeout_after, TaskError
 import copy
 
 @pytest.fixture
@@ -31,8 +31,8 @@ def test_connection_hello(kernel, conns):
             await c.send('client hello world')
 
     async def main(c1, c2):
-        await spawn(server(c1))
-        await spawn(client(c2))
+        await spawn(server, c1)
+        await spawn(client, c2)
 
     kernel.run(main(*conns))
     assert results == ['server hello world',
@@ -54,8 +54,8 @@ def test_connection_hello_bytes(kernel, conns):
             await c.send(b'client hello world')
 
     async def main(c1, c2):
-        await spawn(server(c1))
-        await spawn(client(c2))
+        await spawn(server, c1)
+        await spawn(client, c2)
 
     kernel.run(main(*conns))
     assert results == [b'server hello world',
@@ -78,8 +78,8 @@ def test_connection_large(kernel, conns):
             await c.send(len(msg))
 
     async def main(c1, c2):
-        await spawn(server(c1))
-        await spawn(client(c2))
+        await spawn(server, c1)
+        await spawn(client, c2)
 
     kernel.run(main(*conns))
     assert results == [data,
@@ -103,13 +103,32 @@ def test_connection_auth(kernel, conns):
             await c.send('client hello world')
 
     async def main(c1, c2):
-        await spawn(server(c1))
-        await spawn(client(c2))
+        await spawn(server, c1)
+        await spawn(client, c2)
 
     kernel.run(main(*conns))
 
     assert results == ['server hello world',
                        'client hello world']
+
+
+
+def test_connection_auth_fail(kernel, conns):
+    async def server(c):
+        async with c:
+            with pytest.raises(AuthenticationError):
+                await c.authenticate_server(b'peekaboo')
+
+    async def client(c):
+        async with c:
+            with pytest.raises(AuthenticationError):
+                await c.authenticate_client(b'what?')
+
+    async def main(c1, c2):
+        await spawn(server, c1)
+        await spawn(client, c2)
+
+    kernel.run(main(*conns))
 
 
 def test_connection_send_partial_bytes(kernel, conns):
@@ -159,8 +178,8 @@ def test_connection_send_partial_bytes(kernel, conns):
             await c.send(len(msg))
 
     async def main(c1, c2):
-        await spawn(server(c1))
-        await spawn(client(c2))
+        await spawn(server, c1)
+        await spawn(client, c2)
 
     kernel.run(main(*conns))
     assert results == [data[5:15], 10,
@@ -194,8 +213,8 @@ def test_connection_from_connection(kernel):
             await c.send('client hello world')
 
     async def main(c1, c2):
-        await spawn(server(c1))
-        await spawn(client(c2))
+        await spawn(server, c1)
+        await spawn(client, c2)
 
     kernel.run(main(c1, c2))
     assert results == ['server hello world',
@@ -214,7 +233,7 @@ def test_connection_recv_cancel(kernel, conns):
                 results.append('cancel')
 
     async def main(c):
-        task = await spawn(client(c))
+        task = await spawn(client, c)
         await sleep(1)
         await task.cancel()
         results.append('done cancel')
@@ -235,7 +254,7 @@ def test_connection_recv_timeout(kernel, conns):
             results.append('timeout')
 
     async def main(c):
-        task = await spawn(client(c))
+        task = await spawn(client, c)
         await task.join()
         results.append('done')
 
@@ -257,7 +276,7 @@ def test_connection_send_cancel(kernel, conns):
                 results.append('cancel')
 
     async def main(c):
-        task = await spawn(client(c))
+        task = await spawn(client, c)
         await sleep(1)
         await task.cancel()
         results.append('done cancel')
@@ -279,7 +298,7 @@ def test_connection_send_timeout(kernel, conns):
             results.append('timeout')
 
     async def main(c):
-        task = await spawn(client(c))
+        task = await spawn(client, c)
         await task.join()
         results.append('done')
 
@@ -312,8 +331,8 @@ def test_channel_hello(kernel, chs):
             await c.send('client hello world')
 
     async def main(ch1, ch2):
-        await spawn(server(ch1))
-        await spawn(client(ch2))
+        await spawn(server, ch1)
+        await spawn(client, ch2)
 
     kernel.run(main(*chs))
     assert results == ['server hello world',
@@ -337,8 +356,57 @@ def test_channel_hello_auth(kernel, chs):
             await c.send('client hello world')
 
     async def main(ch1, ch2):
-        await spawn(server(ch1))
-        await spawn(client(ch2))
+        await spawn(server, ch1)
+        await spawn(client, ch2)
+
+    kernel.run(main(*chs))
+    assert results == ['server hello world',
+                       'client hello world']
+
+
+def test_channel_hello_auth_fail(kernel, chs):
+
+    async def server(ch):
+        c = await ch.accept(authkey=b'peekaboo')
+        async with c:
+            await c.send('server hello world')
+
+    async def client(ch):
+        with pytest.raises(AuthenticationError):
+            c = await ch.connect(authkey=b'what?')
+
+    async def main(ch1, ch2):
+        t1 = await spawn(server, ch1)
+        t2 = await spawn(client, ch2)
+        await t2.join()
+        await t1.cancel()
+
+    kernel.run(main(*chs))
+
+@pytest.mark.skip
+def test_channel_slow_connect(kernel, chs):
+    results = []
+
+    async def server(ch):
+        await sleep(2)
+        c = await ch.accept(authkey=b'peekaboo')
+        async with c:
+            await c.send('server hello world')
+            results.append(await c.recv())
+
+    async def client(ch):
+        c = await ch.connect(authkey=b'peekaboo')
+        async with c:
+            msg = await c.recv()
+            results.append(msg)
+            await c.send('client hello world')
+
+    async def main(ch1, ch2):
+        async with ch1, ch2:
+            t1 = await spawn(server, ch1)
+            t2 = await spawn(client, ch2)
+            await t1.join()
+            await t2.join()
 
     kernel.run(main(*chs))
     assert results == ['server hello world',

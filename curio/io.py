@@ -27,10 +27,14 @@
 
 __all__ = ['Socket', 'FileStream', 'SocketStream']
 
+# -- Standard Library
+
 from socket import SOL_SOCKET, SO_ERROR
 from contextlib import contextmanager
 import io
 import os
+
+# -- Curio
 
 from .traps import _read_wait, _write_wait
 from . import errors
@@ -42,11 +46,11 @@ from . import thread
 
 try:
     from ssl import SSLWantReadError, SSLWantWriteError
-    WantRead = (BlockingIOError, SSLWantReadError)
-    WantWrite = (BlockingIOError, SSLWantWriteError)
-except ImportError:
-    WantRead = BlockingIOError
-    WantWrite = BlockingIOError
+    WantRead = (BlockingIOError, InterruptedError, SSLWantReadError)
+    WantWrite = (BlockingIOError, InterruptedError, SSLWantWriteError)
+except ImportError:    # pragma: no cover
+    WantRead = (BlockingIOError, InterruptedError)
+    WantWrite = (BlockingIOError, InterruptedError)
 
 # Wrapper class around an integer file descriptor. This is used
 # to take advantage of an I/O scheduling performance optimization
@@ -145,7 +149,7 @@ class Socket(object):
                 return self._socket_recv(maxsize, flags)
             except WantRead:
                 await _read_wait(self._fileno)
-            except WantWrite:
+            except WantWrite:     # pragma: no cover
                 await _write_wait(self._fileno)
 
     async def recv_into(self, buffer, nbytes=0, flags=0):
@@ -154,7 +158,7 @@ class Socket(object):
                 return self._socket.recv_into(buffer, nbytes, flags)
             except WantRead:
                 await _read_wait(self._fileno)
-            except WantWrite:
+            except WantWrite:     # pragma: no cover
                 await _write_wait(self._fileno)
 
     async def send(self, data, flags=0):
@@ -163,7 +167,7 @@ class Socket(object):
                 return self._socket_send(data, flags)
             except WantWrite:
                 await _write_wait(self._fileno)
-            except WantRead:
+            except WantRead:      # pragma: no cover
                 await _read_wait(self._fileno)
 
     async def sendall(self, data, flags=0):
@@ -177,7 +181,7 @@ class Socket(object):
                     buffer = buffer[nsent:]
                 except WantWrite:
                     await _write_wait(self._fileno)
-                except WantRead:
+                except WantRead:   # pragma: no cover
                     await _read_wait(self._fileno)
         except errors.CancelledError as e:
             e.bytes_sent = total_sent
@@ -224,7 +228,7 @@ class Socket(object):
                 return self._socket.recvfrom(buffersize, flags)
             except WantRead:
                 await _read_wait(self._fileno)
-            except WantWrite:
+            except WantWrite:       # pragma: no cover
                 await _write_wait(self._fileno)
 
     async def recvfrom_into(self, buffer, bytes=0, flags=0):
@@ -233,7 +237,7 @@ class Socket(object):
                 return self._socket.recvfrom_into(buffer, bytes, flags)
             except WantRead:
                 await _read_wait(self._fileno)
-            except WantWrite:
+            except WantWrite:       # pragma: no cover
                 await _write_wait(self._fileno)
 
     async def sendto(self, bytes, flags_or_address, address=None):
@@ -247,7 +251,7 @@ class Socket(object):
                 return self._socket.sendto(bytes, flags, address)
             except WantWrite:
                 await _write_wait(self._fileno)
-            except WantRead:
+            except WantRead:      # pragma: no cover
                 await _read_wait(self._fileno)
 
     async def recvmsg(self, bufsize, ancbufsize=0, flags=0):
@@ -332,10 +336,10 @@ class StreamBase(object):
         return int(self._fileno)
 
     # ---- Methods that must be implemented in child classes
-    async def _read(self, maxbytes=-1):
+    async def _read(self, maxbytes=-1):     # pragma: no cover
         raise NotImplemented()
 
-    async def write(self, data):
+    async def write(self, data):            # pragma: no cover
         raise NotImplemented()
 
     # ---- General I/O methods for streams
@@ -505,7 +509,7 @@ class FileStream(StreamBase):
                     return data
             except WantRead:
                 await _read_wait(self._fileno)
-            except WantWrite:
+            except WantWrite:  # pragma: no cover
                 await _write_wait(self._fileno)
 
     async def write(self, data):
@@ -524,7 +528,7 @@ class FileStream(StreamBase):
                         nwritten += e.characters_written
                         view = view[e.characters_written:]
                     await _write_wait(self._fileno)
-                except WantRead:
+                except WantRead:   # pragma: no cover
                     await _read_wait(self._fileno)
             return nwritten
 
@@ -533,6 +537,8 @@ class FileStream(StreamBase):
             raise
 
     async def flush(self):
+        if not self._file:
+            return
         while True:
             try:
                 return self._file.flush()
@@ -575,7 +581,7 @@ class SocketStream(StreamBase):
                 return data
             except WantRead:
                 await _read_wait(self._fileno)
-            except WantWrite:
+            except WantWrite:        # pragma: no cover
                 await _write_wait(self._fileno)
 
     async def write(self, data):
@@ -589,7 +595,7 @@ class SocketStream(StreamBase):
                     view = view[nbytes:]
                 except WantWrite:
                     await _write_wait(self._fileno)
-                except WantRead:
+                except WantRead:     # pragma: no cover
                     await _read_wait(self._fileno)
             return nwritten
         except errors.CancelledError as e:

@@ -4,10 +4,14 @@
 
 __all__ = [ 'AWAIT', 'async_thread', 'async_context', 'async_iter', 'AsyncThread' ]
 
+# -- Standard Library
+
 import threading
 from concurrent.futures import Future
 from functools import wraps
 from inspect import iscoroutine
+
+# -- Curio
 
 from . import sync
 from .task import spawn, disable_cancellation
@@ -26,7 +30,7 @@ class AsyncThread(object):
 
         self._request = Future()
         self._done_evt = threading.Event()
-        self._terminate_evt = sync.Event()
+        self._terminate_evt = sync.UniversalEvent()
 
         self._coro = None
         self._result_value = None
@@ -72,7 +76,7 @@ class AsyncThread(object):
         self._terminate_evt.set()
 
     async def start(self):
-        self._task = await spawn(self._coro_runner(), daemon=self.daemon)
+        self._task = await spawn(self._coro_runner, daemon=self.daemon)
         self._thread = threading.Thread(target=self._func_runner, daemon=True)
         self._thread.start()
 
@@ -109,43 +113,6 @@ def AWAIT(coro):
         return _locals.thread.AWAIT(coro)
     else:
         raise errors.AsyncOnlyError('Must be used as async')
-
-class _AContextRunner(object):
-    def __init__(self, acontext):
-        self.acontext = acontext
-
-    def __enter__(self):
-        return AWAIT(self.acontext.__aenter__())
-
-    def __exit__(self, ty, val, tb):
-        return AWAIT(self.acontext.__aexit__(ty, val, tb))
-
-def async_context(acontext):
-    '''
-    Run an asynchronous context-manager in an asynchronous thread.
-    '''
-    return _AContextRunner(acontext)
-
-class _AIterRunner(object):
-    def __init__(self, aiter):
-        self.aiter = aiter
-
-    def __iter__(self):
-        return _AIterRunner(self.aiter.__aiter__())
-
-    def __next__(self):
-        try:
-            return AWAIT(self.aiter.__anext__())
-
-        except StopAsyncIteration as e:
-            raise StopIteration from None
-
-def async_iter(aiter):
-    '''
-    Run an asynchronous iterator in an asynchronous thread.
-    '''
-    return _AIterRunner(aiter)
-
 
 def async_thread(func=None, *, daemon=False):
     if func is None:

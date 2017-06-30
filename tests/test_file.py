@@ -2,6 +2,7 @@
 
 import os.path
 from curio import *
+import pytest
 
 dirname = os.path.dirname(__file__)
 testinput = os.path.join(dirname, 'testdata.txt')
@@ -11,6 +12,8 @@ def test_read(kernel):
     async def main():
         async with aopen(testinput, 'r') as f:
             data = await f.read()
+            assert f.closed == False
+
         assert data == 'line 1\nline 2\nline 3\n'
 
     kernel.run(main())
@@ -81,6 +84,38 @@ def test_readiter(kernel):
 
     kernel.run(main())
 
+def test_read_anext(kernel):
+    async def main():
+        async with aopen(testinput, 'r') as f:
+            lines = []
+            while True:
+                line = await anext(f, '')
+                if not line:
+                    break
+                lines.append(line)
+
+        assert lines == ['line 1\n', 'line 2\n', 'line 3\n']
+
+    kernel.run(main())
+
+def test_read_anext2(kernel):
+    async def main():
+        async with aopen(testinput, 'r') as f:
+            lines = []
+            with pytest.raises(StopAsyncIteration):
+                while True:
+                    line = await anext(f)
+                    lines.append(line)
+
+        assert lines == ['line 1\n', 'line 2\n', 'line 3\n']
+
+    kernel.run(main())
+
+def test_bad_usage(kernel):
+    async def main():
+        f = aopen(testinput, 'r')
+        with pytest.raises(RuntimeError):
+            await f.read()
 
 wlines = ['line1\n', 'line2\n', 'line3\n']
 
@@ -121,6 +156,22 @@ def test_seek_tell(kernel):
 
     kernel.run(main())
 
+def test_truncate(kernel):
+    async def main():
+        outname = os.path.join(dirname, 'tmp.txt')
+        async with aopen(outname, 'wb') as f:
+            await f.write(b'12345')
+            await f.flush()
+            assert await f.tell() == 5
+            await f.truncate(2)
+            await f.seek(2)
+            await f.write(b'6789')
+            await f.close()
+        async with aopen(outname, 'rb') as f:
+            data = await f.read()
+            assert data == b'126789'
+
+    kernel.run(main())
 
 def test_sync_iter(kernel):
     async def main():
@@ -148,6 +199,13 @@ def test_sync_with(kernel):
 
     kernel.run(main())
 
+def test_must_be_asynccontext(kernel):
+    async def main():
+        f = aopen(testinput, 'r')
+        with pytest.raises(RuntimeError):
+            data = await f.read()
+
+    kernel.run(main())
 
 def test_blocking(kernel):
     async def main():
@@ -156,5 +214,14 @@ def test_blocking(kernel):
                 data = sync_f.read()
 
         assert data == 'line 1\nline 2\nline 3\n'
+
+    kernel.run(main())
+
+def test_file_misc(kernel):
+    async def main():
+        f = aopen(testinput, 'r')
+        repr(f)
+        with pytest.raises(SyncIOError):
+            next(f)
 
     kernel.run(main())

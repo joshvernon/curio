@@ -7,11 +7,9 @@ import curio
 from curio import ssl
 from curio import network
 
-
-KEYFILE = os.path.dirname(__file__) + "/ssl_test_rsa"    # Private key
+KEYFILE = 'ssl_test_rsa'    # Private key
 # Certificate (self-signed)
-CERTFILE = os.path.dirname(__file__) + "/ssl_test.crt"
-
+CERTFILE = 'ssl_test.crt'
 
 async def handle(client, addr):
     print('Connection from', addr)

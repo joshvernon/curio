@@ -3,26 +3,39 @@
 # Implementation of common task synchronization primitives such as
 # events, locks, semaphores, and condition variables. These primitives
 # are only safe to use in the curio framework--they are not thread safe.
+#
+# The general implementation strategy is based on task scheduling.
+# For example, if a task needs to wait on a lock, it goes to sleep.
+# When a task releases a lock, it wakes a sleeping task. 
+#
+# Internally, there are a few kernel-level sychronization primitives
+# used to coordinate tasks (KSyncQueue, and KSyncEvent).  KSyncQueue
+# is used for queue-based coordination.  KSyncEvent is used for
+# barrier synchronization.  The _scheduler_wait() and _scheduler_wake()
+# traps are used to coordinate synchronization with the underlying Kernel.
 
-__all__ = ['Event', 'Lock', 'RLock', 'Semaphore', 'BoundedSemaphore', 'Condition', 'abide']
 
-from inspect import iscoroutinefunction
+__all__ = ['Event', 'UniversalEvent', 'Lock', 'RLock', 'Semaphore', 'BoundedSemaphore', 'Condition', 'abide']
 
-from .traps import _wait_on_ksync, _reschedule_tasks, _ksync_reschedule_function
-from .kernel import KSyncQueue, KSyncEvent
+# -- Standard library
+
+import threading
+
+# -- Curio
+
+from .traps import _scheduler_wait, _scheduler_wake
+from .sched import SchedFIFO, SchedBarrier
 from . import workers
 from .task import current_task
-from .meta import awaitable
+from .meta import awaitable, iscoroutinefunction
 from . import thread
 
-
 class Event(object):
-    __slots__ = ('_set', '_waiting', '_reschedule_func')
+    __slots__ = ('_set', '_waiting')
 
     def __init__(self):
         self._set = False
-        self._waiting = KSyncEvent()
-        self._reschedule_func = None
+        self._waiting = SchedBarrier()
 
     def __repr__(self):
         res = super().__repr__()
@@ -39,44 +52,38 @@ class Event(object):
         if self._set:
             return
 
-        if self._reschedule_func is None:
-            self._reschedule_func = await _ksync_reschedule_function(self._waiting)
+        await _scheduler_wait(self._waiting, 'EVENT_WAIT')
 
-        await _wait_on_ksync(self._waiting, 'EVENT_WAIT')
+    async def set(self):
+        self._set = True
+        await _scheduler_wake(self._waiting, len(self._waiting))
+
+class UniversalEvent(object):
+    '''
+    An event that's safe to use from Curio and threads.
+    '''
+    def __init__(self):
+        self._evt = threading.Event()
+        
+    def is_set(self):
+        return self._evt.is_set()
+
+    def clear(self):
+        self._evt.clear()
+
+    def wait(self):
+        self._evt.wait()
+
+    @awaitable(wait)
+    async def wait(self):
+        await workers.block_in_thread(self._evt.wait)
 
     def set(self):
-        self._set = True
-        if self._reschedule_func and self._waiting:
-            self._reschedule_func(len(self._waiting))
+        self._evt.set()
 
     @awaitable(set)
     async def set(self):
-        self._set = True
-        await _reschedule_tasks(self._waiting, len(self._waiting))
-
-
-class SyncEvent(Event):
-    '''
-    An Event object that can only be awaited in asynchronous code, set
-    in synchronous code.   Useful for coordinating asynchronous tasks
-    from normal synchronous code.
-    '''
-    __slots__ = ('_reschedule_func',)
-
-    def __init__(self):
-        super().__init__()
-        self._reschedule_func = None
-
-    async def wait(self):
-        if self._reschedule_func is None:
-            self._reschedule_func = await _ksync_reschedule_function(self._waiting)
-        await super().wait()
-
-    def set(self):
-        self._set = True
-        if self._reschedule_func:
-            self._reschedule_func(len(self._waiting))
-
+        self._evt.set()
 
 class _LockBase(object):
 
@@ -99,7 +106,7 @@ class Lock(_LockBase):
 
     def __init__(self):
         self._acquired = False
-        self._waiting = KSyncQueue()
+        self._waiting = SchedFIFO()
 
     def __repr__(self):
         res = super().__repr__()
@@ -108,14 +115,14 @@ class Lock(_LockBase):
 
     async def acquire(self):
         if self._acquired:
-            await _wait_on_ksync(self._waiting, 'LOCK_ACQUIRE')
+            await _scheduler_wait(self._waiting, 'LOCK_ACQUIRE')
         self._acquired = True
         return True
 
     async def release(self):
         assert self._acquired, 'Lock not acquired'
         if self._waiting:
-            await _reschedule_tasks(self._waiting, n=1)
+            await _scheduler_wake(self._waiting, n=1)
         else:
             self._acquired = False
 
@@ -142,9 +149,9 @@ class RLock(_LockBase):
         me = await current_task()
 
         if self._owner is not me:
-
             await self._lock.acquire()
             self._owner = me
+
         self._count += 1
         return True
 
@@ -169,13 +176,14 @@ class RLock(_LockBase):
         >>>          'another coroutine acquires this lock')
 
         """
-        if not await current_task() is self._owner:
-            raise RuntimeError('RLock can only be released by the owner')
         if not self.locked():
             raise RuntimeError('RLock is not locked')
+        if not await current_task() is self._owner:
+            raise RuntimeError('RLock can only be released by the owner')
         self._count -= 1
         if self._count == 0:
             await self._lock.release()
+            self._owner = None
 
     def locked(self):
         return self._count > 0
@@ -187,7 +195,7 @@ class Semaphore(_LockBase):
 
     def __init__(self, value=1):
         self._value = value
-        self._waiting = KSyncQueue()
+        self._waiting = SchedFIFO()
 
     def __repr__(self):
         res = super().__repr__()
@@ -197,14 +205,14 @@ class Semaphore(_LockBase):
 
     async def acquire(self):
         if self._value <= 0:
-            await _wait_on_ksync(self._waiting, 'SEMA_ACQUIRE')
+            await _scheduler_wait(self._waiting, 'SEMA_ACQUIRE')
         else:
             self._value -= 1
         return True
 
     async def release(self):
         if self._waiting:
-            await _reschedule_tasks(self._waiting, n=1)
+            await _scheduler_wake(self._waiting, n=1)
         else:
             self._value += 1
 
@@ -235,7 +243,7 @@ class Condition(_LockBase):
             self._lock = Lock()
         else:
             self._lock = lock
-        self._waiting = KSyncQueue()
+        self._waiting = SchedFIFO()
 
     def __repr__(self):
         res = super().__repr__()
@@ -256,7 +264,7 @@ class Condition(_LockBase):
             raise RuntimeError("Can't wait on unacquired lock")
         await self.release()
         try:
-            await _wait_on_ksync(self._waiting, 'COND_WAIT')
+            await _scheduler_wait(self._waiting, 'COND_WAIT')
         finally:
             await self.acquire()
 
@@ -270,7 +278,7 @@ class Condition(_LockBase):
     async def notify(self, n=1):
         if not self.locked():
             raise RuntimeError("Can't notify on unacquired lock")
-        await _reschedule_tasks(self._waiting, n=n)
+        await _scheduler_wake(self._waiting, n=n)
 
     async def notify_all(self):
         await self.notify(len(self._waiting))
@@ -287,6 +295,10 @@ class _contextadapt_basic(object):
 
     async def __aexit__(self, *args):
         return await workers.run_in_thread(self._manager.__exit__, *args)
+
+# Adapt a synchronous context-manager to an asynchronous manager, but 
+# with a reserved backing thread (the same thread used for the duration of the 
+# context manager)
 
 class _contextadapt_reserve(object):
     def __init__(self, manager):
@@ -313,7 +325,7 @@ class _contextadapt_reserve(object):
         else:
             return item
 
-def abide(op, *args, **kwargs):
+def abide(op, *args, reserve_thread=False):
     '''
     Make curio abide by the execution requirements of an external
     synchronization primitive such as a Lock, Semaphore, or Condition
@@ -356,18 +368,17 @@ def abide(op, *args, **kwargs):
 
     # If op is already a coroutine function, return it unmodified
     if iscoroutinefunction(op):
-        return op(*args, **kwargs)
+        return op(*args)
 
     # If the object is already an asynchronous context manager, return it unmodified
     if hasattr(op, '__aexit__'):
         return op
 
     if hasattr(op, '__exit__'):
-        reserve_thread = kwargs.get('reserve_thread', False)
         return _contextadapt_reserve(op) if reserve_thread else _contextadapt_basic(op)
 
     # Object must be callable at least
     if not callable(op):
         raise TypeError('Must supply a callable')
 
-    return workers.block_in_thread(op, *args, **kwargs)
+    return workers.block_in_thread(op, *args)

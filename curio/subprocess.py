@@ -7,6 +7,8 @@
 __all__ = ['run', 'Popen', 'CompletedProcess', 'CalledProcessError',
            'SubprocessError', 'check_output', 'PIPE', 'STDOUT', 'DEVNULL']
 
+# -- Standard Library
+
 import subprocess
 import os
 
@@ -19,10 +21,13 @@ from subprocess import (
     DEVNULL,
 )
 
+# -- Curio
+
 from .task import spawn, sleep
 from .errors import CancelledError
 from .io import FileStream
 from . import thread
+from .workers import run_in_thread
 
 class Popen(object):
     '''
@@ -61,11 +66,10 @@ class Popen(object):
         return getattr(self._popen, name)
 
     async def wait(self):
-        while True:
-            retcode = self._popen.poll()
-            if retcode is not None:
-                return retcode
-            await sleep(0.0005)
+        retcode = self._popen.poll()
+        if retcode is None:
+            retcode = await run_in_thread(self._popen.wait)
+        return retcode
 
     async def communicate(self, input=b''):
         '''
@@ -75,8 +79,8 @@ class Popen(object):
         cancellation exception has stdout_completed and stderr_completed
         attributes attached containing the bytes read so far.
         '''
-        stdout_task = await spawn(self.stdout.readall()) if self.stdout else None
-        stderr_task = await spawn(self.stderr.readall()) if self.stderr else None
+        stdout_task = await spawn(self.stdout.readall) if self.stdout else None
+        stderr_task = await spawn(self.stderr.readall) if self.stderr else None
         try:
             if input:
                 await self.stdin.write(input)
@@ -88,13 +92,13 @@ class Popen(object):
         except CancelledError as err:
             if stdout_task:
                 await stdout_task.cancel()
-                err.stdout = stdout_task.exc_info[1].bytes_read
+                err.stdout = stdout_task.next_exc.bytes_read
             else:
                 err.stdout = b''
 
             if stderr_task:
                 await stderr_task.cancel()
-                err.stderr = stderr_task.exc_info[1].bytes_read
+                err.stderr = stderr_task.next_exc.bytes_read
             else:
                 err.stderr = b''
             raise

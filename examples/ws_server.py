@@ -3,7 +3,7 @@
 pip install wsproto before running this.
 
 """
-from curio import Queue, run, spawn, wait
+from curio import Queue, run, spawn, TaskGroup
 from curio.socket import IPPROTO_TCP, TCP_NODELAY
 from wsproto.connection import WSConnection, SERVER
 from wsproto.events import (ConnectionClosed, ConnectionRequested, TextReceived,
@@ -19,11 +19,13 @@ async def ws_adapter(in_q, out_q, client, _):
     closed = False
 
     while not closed:
-        wstask = await spawn(client.recv(65535))
-        outqtask = await spawn(out_q.get())
-        async with wait((wstask, outqtask)) as w:
-            task = await w.next_done()
+        wstask = await spawn(client.recv, 65535)
+        outqtask = await spawn(out_q.get)
+
+        async with TaskGroup([wstask, outqtask]) as g:
+            task = await g.next_done()
             result = await task.join()
+            await g.cancel_remaining()
 
         if task is wstask:
             wsconn.receive_bytes(result)
@@ -71,7 +73,7 @@ def serve_ws(handler):
     """Start processing web socket messages using the given handler."""
     async def run_ws(client, addr):
         in_q, out_q = Queue(), Queue()
-        ws_task = await spawn(ws_adapter(in_q, out_q, client, addr))
+        ws_task = await spawn(ws_adapter, in_q, out_q, client, addr)
         await handler(in_q, out_q)
         await out_q.put(None)
         await ws_task.join()  # Wait until it's done.
@@ -85,4 +87,4 @@ if __name__ == '__main__':
     from curio import tcp_server
     port = 5000
     print(f'Listening on port {port}.')
-    run(tcp_server('', port, serve_ws(ws_echo_server)))
+    run(tcp_server, '', port, serve_ws(ws_echo_server))

@@ -1,45 +1,26 @@
-# Echo server with cancellation and signal handling
-
 import signal
-from curio import (run, spawn, SignalSet, CancelledError, tcp_server,
-                   current_task)
-
-clients = set()
-
+from curio import run, spawn, SignalQueue, CancelledError, tcp_server
+from curio.socket import *
 
 async def echo_client(client, addr):
-    task = await current_task()
-    clients.add(task)
     print('Connection from', addr)
+    s = client.as_stream()
     try:
-        while True:
-            data = await client.recv(1000)
-            if not data:
-                break
-            await client.sendall(data)
-        print('Connection closed')
+        async for line in s:
+            await s.write(line)
     except CancelledError:
-        await client.sendall(b'Server going down\n')
+        await s.write(b'SERVER IS GOING DOWN!\n')
         raise
-    finally:
-        clients.remove(task)
-
+    print('Connection closed')
 
 async def main(host, port):
-    while True:
-        async with SignalSet(signal.SIGHUP) as sigset:
+    async with SignalQueue(signal.SIGHUP) as restart:
+        while True:
             print('Starting the server')
-            serv_task = await spawn(tcp_server(host, port, echo_client))
-            await sigset.wait()
+            serv_task = await spawn(tcp_server, host, port, echo_client)
+            await restart.get()
             print('Server shutting down')
             await serv_task.cancel()
 
-            for task in list(clients):
-                await task.cancel()
-
-
 if __name__ == '__main__':
-    try:
-        run(main('', 25000))
-    except KeyboardInterrupt:
-        pass
+    run(main('', 25000))

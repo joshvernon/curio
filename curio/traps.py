@@ -10,37 +10,36 @@
 # File, objects, etc.).
 # ----------------------------------------------------------------------
 
-__all__ = [
-    '_read_wait', '_write_wait', '_future_wait', '_sleep', '_spawn', '_join_task',
-    '_cancel_task',
-    '_wait_on_ksync', '_reschedule_tasks', '_ksync_reschedule_function',
-    '_sigwatch', '_sigunwatch', '_sigwait', '_get_kernel', '_get_current',
-    '_set_timeout', '_unset_timeout', '_clock',
-]
+__all__ = [ 
+    '_read_wait', '_write_wait', '_future_wait', '_sleep', '_spawn',
+    '_cancel_task', '_scheduler_wait', '_scheduler_wake',
+    '_get_kernel', '_get_current', '_set_timeout', '_unset_timeout',
+    '_clock',
+    ]
+
+# -- Standard library
 
 from types import coroutine
 from selectors import EVENT_READ, EVENT_WRITE
 from enum import IntEnum
 
+# -- Curio
+
+from . import errors
 
 class Traps(IntEnum):
     _trap_io = 0
     _trap_future_wait = 1
     _trap_sleep = 2
-    _trap_join_task = 3
-    _trap_wait_ksync = 4
-    _trap_sigwait = 5
-    _trap_cancel_task = 6
-    _trap_get_kernel = 7
-    _trap_get_current = 8
-    _trap_set_timeout = 9
-    _trap_unset_timeout = 10
-    _trap_ksync_reschedule_function = 11
-    _trap_clock = 12
-    _trap_sigwatch = 13
-    _trap_sigunwatch = 14
-    _trap_spawn = 15
-    _trap_ksync_reschedule_tasks = 16
+    _trap_sched_wait = 3
+    _trap_sched_wake = 4
+    _trap_cancel_task = 5
+    _trap_get_kernel = 6
+    _trap_get_current = 7
+    _trap_set_timeout = 8
+    _trap_unset_timeout = 9
+    _trap_clock = 10
+    _trap_spawn = 11
 
 
 globals().update((trap.name, trap) for trap in Traps)
@@ -49,7 +48,8 @@ globals().update((trap.name, trap) for trap in Traps)
 @coroutine
 def _read_wait(fileobj):
     '''
-    Wait until reading can be performed.
+    Wait until reading can be performed.  If another task is waiting
+    on the same file, a ResourceBusy exception is raised. 
     '''
     yield (_trap_io, fileobj, EVENT_READ, 'READ_WAIT')
 
@@ -57,7 +57,8 @@ def _read_wait(fileobj):
 @coroutine
 def _write_wait(fileobj):
     '''
-    Wait until writing can be performed.
+    Wait until writing can be performed. If another task is waiting
+    to write on the same file, a ResourceBusy exception is raised.
     '''
     yield (_trap_io, fileobj, EVENT_WRITE, 'WRITE_WAIT')
 
@@ -90,59 +91,28 @@ def _spawn(coro, daemon):
 
 
 @coroutine
-def _cancel_task(task):
+def _cancel_task(task, exc=errors.TaskCancelled, val=None):
     '''
     Cancel a task. Causes a CancelledError exception to raise in the task.
+    Set the exc and val arguments to change the exception.
     '''
-    yield (_trap_cancel_task, task)
+    yield (_trap_cancel_task, task, exc, val)
 
 
 @coroutine
-def _join_task(task):
+def _scheduler_wait(sched, state):
     '''
-    Wait for a task to terminate.
+    Put the task to sleep on a scheduler primitive.
     '''
-    yield (_trap_join_task, task)
+    yield (_trap_sched_wait, sched, state)
 
 
 @coroutine
-def _wait_on_ksync(ksync, state):
+def _scheduler_wake(sched, n=1):
     '''
-    Put the task to sleep on a kernel synchronization primitive.
+    Reschedule one or more tasks waiting on a scheduler primitive.
     '''
-    yield (_trap_wait_ksync, ksync, state)
-
-
-@coroutine
-def _reschedule_tasks(ksync, n=1):
-    '''
-    Reschedule one or more tasks waiting on a kernel sync primitive.
-    '''
-    yield (_trap_ksync_reschedule_tasks, ksync, n)
-
-
-@coroutine
-def _sigwatch(sigset):
-    '''
-    Start monitoring a signal set
-    '''
-    yield (_trap_sigwatch, sigset)
-
-
-@coroutine
-def _sigunwatch(sigset):
-    '''
-    Stop watching a signal set
-    '''
-    yield (_trap_sigunwatch, sigset)
-
-
-@coroutine
-def _sigwait(sigset):
-    '''
-    Wait for a signal to arrive.
-    '''
-    yield (_trap_sigwait, sigset)
+    yield (_trap_sched_wake, sched, n)
 
 
 @coroutine
@@ -176,17 +146,6 @@ def _unset_timeout(previous):
     Restore the previous timeout for the current task.
     '''
     yield (_trap_unset_timeout, previous)
-
-
-@coroutine
-def _ksync_reschedule_function(queue):
-    '''
-    Return a function that allows tasks to be rescheduled from a
-    kernel sync primitive without the use of await.  Can be used in
-    synchronous code as long as it runs in the same thread as the
-    Curio kernel.
-    '''
-    return (yield (_trap_ksync_reschedule_function, queue))
 
 
 @coroutine

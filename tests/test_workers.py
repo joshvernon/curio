@@ -4,6 +4,7 @@ import pytest
 
 import time
 from curio import *
+import pytest
 
 
 def fib(n):
@@ -27,8 +28,8 @@ def test_cpu(kernel):
         results.append(('fib', r))
 
     async def main():
-        await spawn(spin(10))
-        await spawn(cpu_bound(36))
+        await spawn(spin, 10)
+        await spawn(cpu_bound, 36)
 
     kernel.run(main())
 
@@ -36,6 +37,13 @@ def test_cpu(kernel):
         10, 9, 8, 7, 6, 5, 4, 3, 2, 1,
         ('fib', 14930352)
     ]
+
+def test_bad_cpu(kernel):
+    async def main():
+        with pytest.raises(TypeError): 
+            r = await run_in_process(fib, '1')
+
+    kernel.run(main())
 
 
 def test_blocking(kernel):
@@ -52,8 +60,8 @@ def test_blocking(kernel):
         results.append('sleep done')
 
     async def main():
-        await spawn(spin(10))
-        await spawn(blocking(2))
+        await spawn(spin, 10)
+        await spawn(blocking, 2)
 
     kernel.run(main())
 
@@ -62,6 +70,13 @@ def test_blocking(kernel):
         'sleep done',
     ]
 
+def test_executor(kernel):
+    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor()
+    async def main():
+        r = await run_in_executor(pool, fib, 1)
+        assert r == 1
+    kernel.run(main())
 
 @pytest.mark.parametrize('runner', [run_in_thread, run_in_process])
 def test_worker_cancel(kernel, runner):
@@ -74,7 +89,7 @@ def test_worker_cancel(kernel, runner):
             n -= 1
 
     async def blocking(n):
-        task = await spawn(runner(time.sleep, n))
+        task = await spawn(runner, time.sleep, n)
         await sleep(0.55)
         await task.cancel()
         try:
@@ -86,8 +101,8 @@ def test_worker_cancel(kernel, runner):
                 results.append(repr(e.__cause__))
 
     async def main():
-        await spawn(spin(10))
-        await spawn(blocking(5))
+        await spawn(spin, 10)
+        await spawn(blocking, 5)
 
     kernel.run(main())
 
@@ -113,8 +128,8 @@ def test_worker_timeout(kernel, runner):
             results.append('cancel')
 
     async def main():
-        await spawn(spin(10))
-        await spawn(blocking(5))
+        await spawn(spin, 10)
+        await spawn(blocking, 5)
 
     kernel.run(main())
 

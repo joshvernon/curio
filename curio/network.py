@@ -4,20 +4,20 @@
 # based on their similar counterparts in the asyncio library. Some of the
 # fiddly low-level bits are borrowed.
 
-__all__ = [
-    'open_connection',
-    'tcp_server',
-    'open_unix_connection',
-    'unix_server',
-]
+__all__ = [ 'open_connection', 'tcp_server', 'open_unix_connection', 'unix_server' ]
+
+# -- Standard library
+
+import logging
+log = logging.getLogger(__name__)
+
+# -- Curio
 
 from . import socket
 from . import ssl as curiossl
-from .task import spawn
+from .task import TaskGroup
 from .io import Socket
-import logging
 
-log = logging.getLogger(__name__)
 
 async def _wrap_ssl_client(sock, ssl, server_hostname, alpn_protocols):
     # Applies SSL to a client connection. Returns an SSL socket.
@@ -49,7 +49,7 @@ async def _wrap_ssl_client(sock, ssl, server_hostname, alpn_protocols):
         # this code can be simplified to just the else case below.
         #
         if isinstance(sslcontext, curiossl.CurioSSLContext):
-            sock = sslcontext.wrap_socket(sock, **extra_args)
+            sock = await sslcontext.wrap_socket(sock, do_handshake_on_connect=False, **extra_args)
         else:
             # do_handshake_on_connect should not be specified for
             # non-blocking sockets
@@ -105,14 +105,18 @@ async def run_server(sock, client_connected_task, ssl=None):
             await client_connected_task(client, addr)
 
     async with sock:
-        while True:
-            client, addr = await sock.accept()
-            if ssl:
-                client = ssl.wrap_socket(client._socket, server_side=True, do_handshake_on_connect=False)
-                if not isinstance(client, Socket):
-                    client = Socket(client)
-            await spawn(run_client(client, addr))
-            del client
+        async with TaskGroup() as client_group:
+            while True:
+                client, addr = await sock.accept()
+                if ssl:
+                    if isinstance(ssl, curiossl.CurioSSLContext):
+                        client = await ssl.wrap_socket(client, server_side=True, do_handshake_on_connect=False)
+                    else:
+                        client = ssl.wrap_socket(client, server_side=True, do_handshake_on_connect=False)
+                    if not isinstance(client, Socket):
+                        client = Socket(client)
+                await client_group.spawn(run_client, client, addr, ignore_result=True)
+                del client
 
 def tcp_server_socket(host, port, family=socket.AF_INET, backlog=100,
                       reuse_address=True, reuse_port=False):

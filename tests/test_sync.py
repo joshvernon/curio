@@ -4,7 +4,7 @@
 
 from collections import deque
 from curio import *
-
+import pytest
 import threading
 import time
 
@@ -32,8 +32,8 @@ class TestEvent:
 
         async def main():
             evt = Event()
-            t1 = await spawn(event_waiter(evt))
-            t2 = await spawn(event_setter(evt, 1))
+            t1 = await spawn(event_waiter, evt)
+            t2 = await spawn(event_setter, evt, 1)
             await t1.join()
             await t2.join()
 
@@ -63,8 +63,8 @@ class TestEvent:
 
         async def main():
             evt = Event()
-            t1 = await spawn(event_waiter(evt, 1))
-            t2 = await spawn(event_setter(evt))
+            t1 = await spawn(event_waiter, evt, 1)
+            t2 = await spawn(event_setter, evt)
             await t1.join()
             await t2.join()
 
@@ -87,7 +87,7 @@ class TestEvent:
 
         async def event_cancel(seconds):
             evt = Event()
-            task = await spawn(event_waiter(evt))
+            task = await spawn(event_waiter, evt)
             results.append('sleep')
             await sleep(seconds)
             results.append('cancel_start')
@@ -115,7 +115,7 @@ class TestEvent:
 
         async def event_run(seconds):
             evt = Event()
-            task = await spawn(event_waiter(evt))
+            task = await spawn(event_waiter, evt)
             results.append('sleep')
             await sleep(seconds)
             results.append('sleep_done')
@@ -149,7 +149,7 @@ class TestEvent:
 
         async def event_run():
             evt = Event()
-            task = await spawn(event_waiter(evt))
+            task = await spawn(event_waiter, evt)
             results.append('sleep')
             await sleep(0.25)
             results.append('event_set')
@@ -170,79 +170,6 @@ class TestEvent:
         ]
 
 
-class TestSyncEvent:
-
-    def test_syncevent_get_wait(self, kernel):
-        results = []
-
-        def evt_set(evt):
-            evt.set()
-
-        async def event_setter(evt, seconds):
-            results.append('sleep')
-            await sleep(seconds)
-            results.append('event_set')
-            evt_set(evt)
-
-        async def event_waiter(evt):
-            results.append('wait_start')
-            results.append(evt.is_set())
-            await evt.wait()
-            results.append('wait_done')
-            results.append(evt.is_set())
-            evt.clear()
-            results.append(evt.is_set())
-
-        async def main():
-            evt = Event()
-            t1 = await spawn(event_waiter(evt))
-            t2 = await spawn(event_setter(evt, 1))
-            await t1.join()
-            await t2.join()
-
-        kernel.run(main())
-        assert results == [
-            'wait_start',
-            False,
-            'sleep',
-            'event_set',
-            'wait_done',
-            True,
-            False
-        ]
-
-    def test_syncevent_get_immediate(self, kernel):
-        results = []
-
-        def evt_set(evt):
-            evt.set()
-
-        async def event_setter(evt):
-            results.append('event_set')
-            evt_set(evt)
-
-        async def event_waiter(evt, seconds):
-            results.append('sleep')
-            await sleep(seconds)
-            results.append('wait_start')
-            await evt.wait()
-            results.append('wait_done')
-
-        async def main():
-            evt = Event()
-            t1 = await spawn(event_waiter(evt, 1))
-            t2 = await spawn(event_setter(evt))
-            await t1.join()
-            await t2.join()
-
-        kernel.run(main())
-        assert results == [
-            'sleep',
-            'event_set',
-            'wait_start',
-            'wait_done',
-        ]
-
 
 class TestLock:
 
@@ -258,9 +185,9 @@ class TestLock:
 
         async def main():
             lck = Lock()
-            t1 = await spawn(worker(lck, 'work1'))
-            t2 = await spawn(worker(lck, 'work2'))
-            t3 = await spawn(worker(lck, 'work3'))
+            t1 = await spawn(worker, lck, 'work1')
+            t2 = await spawn(worker, lck, 'work2')
+            t3 = await spawn(worker, lck, 'work3')
             await t1.join()
             await t2.join()
             await t3.join()
@@ -294,7 +221,7 @@ class TestLock:
         async def worker_cancel(seconds):
             lck = Lock()
             async with lck:
-                task = await spawn(worker(lck))
+                task = await spawn(worker, lck)
                 results.append('sleep')
                 await sleep(seconds)
                 results.append('cancel_start')
@@ -325,7 +252,7 @@ class TestLock:
         async def worker_timeout(seconds):
             lck = Lock()
             async with lck:
-                await spawn(worker(lck))
+                await spawn(worker, lck)
                 results.append('sleep')
                 await sleep(seconds)
                 results.append('sleep_done')
@@ -368,9 +295,9 @@ class TestRLock:
 
         async def main():
             lck = RLock()
-            t1 = await spawn(worker(lck, 'work1'))
-            t2 = await spawn(worker(lck, 'work2'))
-            t3 = await spawn(worker_simple(lck))
+            t1 = await spawn(worker, lck, 'work1')
+            t2 = await spawn(worker, lck, 'work2')
+            t3 = await spawn(worker_simple, lck)
             await t1.join()
             await t2.join()
             await t3.join()
@@ -396,6 +323,29 @@ class TestRLock:
             'simple releasing'
         ]
 
+    def test_rlock_notowner(self, kernel):
+        async def child1(lck):
+            await lck.acquire()
+            await sleep(0.25)
+            await lck.release()
+
+        async def child2(lck):
+            await sleep(0.1)
+            with pytest.raises(RuntimeError):
+                await lck.release()
+
+        async def main():
+            lck = RLock()
+            with pytest.raises(RuntimeError):
+                await lck.release()
+
+            t1 = await spawn(child1, lck)
+            t2 = await spawn(child2, lck)
+            await t1.join()
+            await t2.join()
+
+        kernel.run(main)
+
 
 class TestSemaphore:
 
@@ -411,9 +361,9 @@ class TestSemaphore:
 
         async def main():
             sema = Semaphore()
-            t1 = await spawn(worker(sema, 'work1'))
-            t2 = await spawn(worker(sema, 'work2'))
-            t3 = await spawn(worker(sema, 'work3'))
+            t1 = await spawn(worker, sema, 'work1')
+            t2 = await spawn(worker, sema, 'work2')
+            t3 = await spawn(worker, sema, 'work3')
             await t1.join()
             await t2.join()
             await t3.join()
@@ -447,9 +397,9 @@ class TestSemaphore:
 
         async def main():
             sema = Semaphore(2)
-            t1 = await spawn(worker(sema, 'work1', 0.25))
-            t2 = await spawn(worker(sema, 'work2', 0.30))
-            t3 = await spawn(worker(sema, 'work3', 0.35))
+            t1 = await spawn(worker, sema, 'work1', 0.25)
+            t2 = await spawn(worker, sema, 'work2', 0.30)
+            t3 = await spawn(worker, sema, 'work3', 0.35)
             await t1.join()
             await t2.join()
             await t3.join()
@@ -483,7 +433,7 @@ class TestSemaphore:
         async def worker_cancel(seconds):
             lck = Semaphore()
             async with lck:
-                task = await spawn(worker(lck))
+                task = await spawn(worker, lck)
                 results.append('sleep')
                 await sleep(seconds)
                 results.append('cancel_start')
@@ -514,7 +464,7 @@ class TestSemaphore:
         async def worker_timeout(seconds):
             lck = Semaphore()
             async with lck:
-                await spawn(worker(lck))
+                await spawn(worker, lck)
                 results.append('sleep')
                 await sleep(seconds)
                 results.append('sleep_done')
@@ -532,6 +482,8 @@ class TestSemaphore:
         results = []
         async def task():
             sema = BoundedSemaphore(1)
+            await sema.acquire()
+            await sema.release()
             try:
                 await sema.release()
                 results.append('not here')
@@ -577,11 +529,11 @@ class TestCondition:
                 await sleep(0.1)
 
         async def main():
-            cond = Condition()
+            cond = Condition(Lock())
             q = deque()
-            t1 = await spawn(consumer(cond, q, 'cons1'))
-            t2 = await spawn(consumer(cond, q, 'cons2'))
-            t3 = await spawn(producer(cond, q, 4, 2))
+            t1 = await spawn(consumer, cond, q, 'cons1')
+            t2 = await spawn(consumer, cond, q, 'cons2')
+            t3 = await spawn(producer, cond, q, 4, 2)
             await t1.join()
             await t2.join()
             await t3.join()
@@ -622,7 +574,7 @@ class TestCondition:
 
         async def worker_cancel(seconds):
             cond = Condition()
-            task = await spawn(worker(cond))
+            task = await spawn(worker, cond)
             results.append('sleep')
             await sleep(seconds)
             results.append('cancel_start')
@@ -652,7 +604,7 @@ class TestCondition:
 
         async def worker_cancel(seconds):
             cond = Condition()
-            task = await spawn(worker(cond))
+            task = await spawn(worker, cond)
             results.append('sleep')
             await sleep(seconds)
             results.append('done')
@@ -676,9 +628,9 @@ class TestCondition:
 
         async def worker_notify(seconds):
             cond = Condition()
-            t1 = await spawn(worker(cond))
-            t2 = await spawn(worker(cond))
-            t3 = await spawn(worker(cond))
+            t1 = await spawn(worker, cond)
+            t2 = await spawn(worker, cond)
+            t3 = await spawn(worker, cond)
             results.append('sleep')
             await sleep(seconds)
             async with cond:
@@ -723,9 +675,9 @@ class TestCondition:
         async def main():
             cond = Condition()
             q = deque()
-            t1 = await spawn(consumer(cond, q, 'cons1'))
-            t2 = await spawn(consumer(cond, q, 'cons2'))
-            t3 = await spawn(producer(cond, q, 4))
+            t1 = await spawn(consumer, cond, q, 'cons1')
+            t2 = await spawn(consumer, cond, q, 'cons2')
+            t3 = await spawn(producer, cond, q, 4)
             await t1.join()
             await t2.join()
             await t3.join()
@@ -744,6 +696,16 @@ class TestCondition:
             'cons2 done'
         ]
 
+    def test_condition_error(self, kernel):
+        async def main():
+            c = Condition()
+            with pytest.raises(RuntimeError):
+                await c.notify()
+                
+            with pytest.raises(RuntimeError):
+                await c.wait()
+
+        kernel.run(main)
 
 class TestAbide:
 
@@ -766,8 +728,8 @@ class TestAbide:
         async def main():
             lck = Lock()
             evt = Event()
-            t1 = await spawn(tester(lck, evt))
-            t2 = await spawn(waiter(lck, evt))
+            t1 = await spawn(tester, lck, evt)
+            t2 = await spawn(waiter, lck, evt)
             await t1.join()
             await t2.join()
 
@@ -791,7 +753,7 @@ class TestAbide:
         def tester(lck, evt):
             with lck:
                 results.append('tester')
-                time.sleep(0.1)
+                time.sleep(0.2)
             evt.wait()
             with lck:
                 results.append('tester finish')
@@ -799,9 +761,9 @@ class TestAbide:
         async def main():
             lck = threading.Lock()
             evt = threading.Event()
-            t1 = await spawn(run_in_thread(tester, lck, evt))
-            await sleep(0.01)
-            t2 = await spawn(waiter(lck, evt))
+            t1 = await spawn(run_in_thread, tester, lck, evt)
+            await sleep(0.1)
+            t2 = await spawn(waiter, lck, evt)
             await t1.join()
             await t2.join()
 
@@ -830,7 +792,7 @@ class TestAbide:
             with lck:
                 results.append('tester')
                 time.sleep(1)
-            time.sleep(0.1)
+            time.sleep(0.2)
             with lck:
                 results.append('tester2')
             evt.wait()
@@ -840,9 +802,9 @@ class TestAbide:
         async def main():
             lck = threading.Lock()
             evt = threading.Event()
-            t1 = await spawn(run_in_thread(tester, lck, evt))
-            await sleep(0.01)
-            t2 = await spawn(waiter(lck, evt))
+            t1 = await spawn(run_in_thread, tester, lck, evt)
+            await sleep(0.1)
+            t2 = await spawn(waiter, lck, evt)
             await t1.join()
             await t2.join()
 
@@ -866,7 +828,7 @@ class TestAbide:
         def tester(lck, evt):
             with lck:
                 results.append('tester')
-                time.sleep(0.1)
+                time.sleep(0.2)
             evt.wait()
             with lck:
                 results.append('tester finish')
@@ -874,9 +836,9 @@ class TestAbide:
         async def main():
             lck = threading.RLock()
             evt = threading.Event()
-            t1 = await spawn(run_in_thread(tester, lck, evt))
-            await sleep(0.01)
-            t2 = await spawn(waiter(lck, evt))
+            t1 = await spawn(run_in_thread, tester, lck, evt)
+            await sleep(0.1)
+            t2 = await spawn(waiter, lck, evt)
             await t1.join()
             await t2.join()
 
@@ -887,3 +849,101 @@ class TestAbide:
             'released',
             'tester finish'
         ]
+
+    def test_abide_file(self, kernel):
+        import os
+        dirname = os.path.dirname(__file__)
+        testinput = os.path.join(dirname, 'testdata.txt')
+        async def main():
+            async with abide(open(testinput), reserve_thread=True) as f:
+                assert f.closed == False
+                data = await f.read()
+                assert data == 'line 1\nline 2\nline 3\n'
+        kernel.run(main())
+
+    def test_badabide(self, kernel):
+        async def main():
+            with pytest.raises(TypeError):
+                async with abide(2):
+                    pass
+
+        kernel.run(main)
+
+class TestUniversalEvent:
+
+    def test_uevent_get_wait(self, kernel):
+        results = []
+        async def event_setter(evt, seconds):
+            results.append('sleep')
+            await sleep(seconds)
+            results.append('event_set')
+            await evt.set()
+
+        async def event_waiter(evt):
+            results.append('wait_start')
+            results.append(evt.is_set())
+            await evt.wait()
+            results.append('wait_done')
+            results.append(evt.is_set())
+            evt.clear()
+            results.append(evt.is_set())
+
+        async def main():
+            evt = UniversalEvent()
+            t1 = await spawn(event_waiter, evt)
+            t2 = await spawn(event_setter, evt, 1)
+            await t1.join()
+            await t2.join()
+
+        kernel.run(main())
+        assert results == [
+            'wait_start',
+            False,
+            'sleep',
+            'event_set',
+            'wait_done',
+            True,
+            False
+        ]
+
+
+    def test_uevent_get_twait(self, kernel):
+        results = []
+        async def event_setter(evt, seconds):
+            results.append('sleep')
+            await sleep(seconds)
+            results.append('event_set')
+            await evt.set()
+
+        def event_waiter(evt):
+            results.append('wait_start')
+            results.append(evt.is_set())
+            evt.wait()
+            results.append('wait_done')
+            results.append(evt.is_set())
+            evt.clear()
+            results.append(evt.is_set())
+
+        async def main():
+            evt = UniversalEvent()
+            t1 = threading.Thread(target=event_waiter, args=(evt,))
+            t1.start()
+            t2 = await spawn(event_setter, evt, 1)
+            await run_in_thread(t1.join)
+            await t2.join()
+
+        kernel.run(main())
+        assert results == [
+            'wait_start',
+            False,
+            'sleep',
+            'event_set',
+            'wait_done',
+            True,
+            False
+        ]
+
+def test_repr():
+    # For test coverage
+    for cls in [Lock, Event, Semaphore, BoundedSemaphore, Condition, RLock, UniversalEvent ]:
+        repr(cls())
